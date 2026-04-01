@@ -1,0 +1,12 @@
+pydantic<3,>=2
+typer<1,>=0.19
+httpx<1,>=0.27
+huggingface-hub<1,>=0.25
+PyYAML<7,>=6
+Pillow<12,>=10
+PyMuPDF<2,>=1.24
+doclayout-yolo<1,>=0.0.4
+reportlab<5,>=4
+
+[test]
+pytest<9,>=8

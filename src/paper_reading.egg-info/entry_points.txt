@@ -1,0 +1,2 @@
+[console_scripts]
+paper-read = paper_reading.cli:app
