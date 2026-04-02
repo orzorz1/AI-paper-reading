@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from ..config import AppConfig
+from ..config import AppConfig, OpenAISettings
 from ..errors import PipelineExecutionError, SelectionValidationError
 from ..llm import OpenAICompatibleClient
 from ..logging_utils import get_logger
@@ -57,6 +57,22 @@ class PaperReadingOrchestrator:
         self._explainer = explainer or FigureExplainer(client, config.openai.vision_model)
         self._composer = composer or MarkdownComposer(client, config.openai.text_model)
         self._pdf_exporter = pdf_exporter or MarkdownPdfExporter()
+
+    def with_openai_settings(self, openai: OpenAISettings) -> "PaperReadingOrchestrator":
+        """共享版面解析、PDF 解析等非 LLM 组件，仅替换大模型接口与相关调用链。"""
+        merged_config = self._config.model_copy(update={"openai": openai})
+        client = OpenAICompatibleClient(openai)
+        return PaperReadingOrchestrator(
+            merged_config,
+            parser=self._parser,
+            layout_detector=self._layout_detector,
+            matcher=self._matcher,
+            selector=FigureSelector(client, openai.text_model),
+            planner=StoryPlanner(client, openai.text_model),
+            explainer=FigureExplainer(client, openai.vision_model),
+            composer=MarkdownComposer(client, openai.text_model),
+            pdf_exporter=self._pdf_exporter,
+        )
 
     def build(self, options: BuildOptions) -> BuildResult:
         """构建最终 Markdown 和所有中间产物。"""

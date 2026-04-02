@@ -7,6 +7,9 @@ Pillow<12,>=10
 PyMuPDF<2,>=1.24
 doclayout-yolo<1,>=0.0.4
 reportlab<5,>=4
+fastapi<1,>=0.115
+uvicorn[standard]<1,>=0.32
+python-multipart<1,>=0.0.12
 
 [test]
 pytest<9,>=8

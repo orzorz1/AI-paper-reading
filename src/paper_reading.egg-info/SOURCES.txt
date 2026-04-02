@@ -1,3 +1,4 @@
+README.md
 pyproject.toml
 src/paper_reading/__init__.py
 src/paper_reading/cli.py
@@ -23,6 +24,11 @@ src/paper_reading/pipeline/parser.py
 src/paper_reading/pipeline/pdf_exporter.py
 src/paper_reading/pipeline/planner.py
 src/paper_reading/pipeline/selector.py
+src/paper_reading/web/__init__.py
+src/paper_reading/web/server.py
+src/paper_reading/web/static/app.css
+src/paper_reading/web/static/app.js
+src/paper_reading/web/static/index.html
 tests/test_cli.py
 tests/test_composer.py
 tests/test_config.py
@@ -32,4 +38,5 @@ tests/test_logging_utils.py
 tests/test_matcher.py
 tests/test_orchestrator.py
 tests/test_parser.py
+tests/test_pdf_exporter.py
 文档/AI论文读图讲解小工具-技术路线.md

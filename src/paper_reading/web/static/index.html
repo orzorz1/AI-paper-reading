@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI论文解读</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="header">
+        <h1>AI论文解读</h1>
+        <p class="sub">
+          上传一篇论文 PDF，自动生成论文解读。
+          <a class="example-link" href="/static/example.pdf" download="example.pdf">查看示例</a>
+        </p>
+      </header>
+
+      <section class="card" aria-labelledby="settings-heading">
+        <h2 id="settings-heading" class="section-heading">生成设定</h2>
+        <div class="row">
+          <label class="field">
+            <span class="label">叙述详略</span>
+            <select id="length" name="length" disabled>
+              <option value="short">简明（要点式）</option>
+              <option value="medium" selected>标准（平衡叙述）</option>
+              <option value="long">详尽（展开论述）</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="label">解读重心</span>
+            <select id="focus" name="focus" disabled>
+              <option value="method" selected>方法学脉络</option>
+              <option value="experiment">实验与结果</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="api-block">
+          <label class="switch-row">
+            <input type="checkbox" id="api-custom" name="api_custom" value="true" />
+            <span class="switch-label">使用自定义 API</span>
+          </label>
+          <div id="api-fields" class="api-fields" hidden>
+            <label class="api-field">
+              <span class="label">Base URL</span>
+              <input
+                id="openai-base-url"
+                type="text"
+                inputmode="url"
+                autocomplete="off"
+                placeholder="https://api.openai.com/v1"
+              />
+            </label>
+            <label class="api-field">
+              <span class="label">API Key</span>
+              <input
+                id="openai-api-key"
+                type="password"
+                autocomplete="off"
+                placeholder="必填"
+              />
+            </label>
+            <label class="api-field">
+              <span class="label">文本模型</span>
+              <input
+                id="openai-text-model"
+                type="text"
+                autocomplete="off"
+                placeholder="如 gpt-4.1-mini"
+              />
+            </label>
+            <label class="api-field">
+              <span class="label">视觉模型</span>
+              <input
+                id="openai-vision-model"
+                type="text"
+                autocomplete="off"
+                placeholder="如 gpt-4.1-mini"
+              />
+            </label>
+          </div>
+        </div>
+
+        <h3 class="section-heading section-heading--spaced">上传论文</h3>
+        <div
+          id="dropzone"
+          class="dropzone"
+          tabindex="0"
+          role="button"
+          aria-label="将 PDF 拖放至此处或点击以选择文件"
+        >
+          <input
+            type="file"
+            id="file"
+            accept="application/pdf,.pdf"
+            hidden
+          />
+          <div class="dropzone-inner">
+            <p class="drop-title">将 PDF 拖放至此处</p>
+            <p class="drop-hint">
+              亦可点击此区域选择文件 · 单次仅处理单篇文献 · PDF · 单文件 ≤ 10&nbsp;MB
+            </p>
+            <p id="file-name" class="file-name"></p>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button type="button" id="submit" class="btn primary" disabled>
+            生成解读 PDF
+          </button>
+        </div>
+
+        <p id="status" class="status" role="status"></p>
+        <p id="error" class="error" hidden></p>
+      </section>
+
+      <footer class="support-footer" aria-labelledby="support-heading">
+        <h2 id="support-heading" class="support-heading">反馈与支持</h2>
+        <p class="support-text">
+          每次生成解读都会消耗大模型的 Token / API 额度，目前由作者自费；服务器与日常维护亦自担。若工具对你有帮助，欢迎自愿扫码支持；Bug、使用问题或建议请加下方 QQ。
+        </p>
+        <p class="support-qq">
+          <span class="support-label">Bug / 反馈 QQ：</span>
+          <span class="support-value" translate="no">3399649206</span>
+        </p>
+        <div class="support-qr-wrap">
+          <p class="support-qr-caption">扫码支持</p>
+          <img
+            class="support-qr"
+            src="/static/skm.jpg"
+            width="180"
+            height="180"
+            alt="收款码"
+            loading="lazy"
+            decoding="async"
+          />
+        </div>
+      </footer>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

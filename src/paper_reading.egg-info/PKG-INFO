@@ -13,6 +13,9 @@ Requires-Dist: Pillow<12,>=10
 Requires-Dist: PyMuPDF<2,>=1.24
 Requires-Dist: doclayout-yolo<1,>=0.0.4
 Requires-Dist: reportlab<5,>=4
+Requires-Dist: fastapi<1,>=0.115
+Requires-Dist: uvicorn[standard]<1,>=0.32
+Requires-Dist: python-multipart<1,>=0.0.12
 Provides-Extra: test
 Requires-Dist: pytest<9,>=8; extra == "test"
 

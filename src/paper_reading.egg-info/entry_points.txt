@@ -1,2 +1,3 @@
 [console_scripts]
 paper-read = paper_reading.cli:app
+paper-read-web = paper_reading.web.server:main

@@ -18,6 +18,9 @@ dependencies = [
   "PyMuPDF>=1.24,<2",
   "doclayout-yolo>=0.0.4,<1",
   "reportlab>=4,<5",
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.32,<1",
+  "python-multipart>=0.0.12,<1",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +28,10 @@ test = ["pytest>=8,<9"]
 
 [project.scripts]
 paper-read = "paper_reading.cli:app"
+paper-read-web = "paper_reading.web.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+paper_reading = ["web/static/*"]
