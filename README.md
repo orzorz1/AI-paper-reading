@@ -12,7 +12,17 @@ pip install -e .
 
 ## 配置
 
-项目根目录放一个 `.env`。下面是当前项目里用到的完整变量：
+先复制模板文件：
+
+```bash
+cp .env.example .env
+```
+
+然后按需修改 `.env`。模板文件是：
+
+- `.env.example`
+
+下面是当前项目里用到的完整变量：
 
 ```env
 # OpenAI 兼容接口
@@ -109,4 +119,3 @@ paper/test-202604012200/
 - `paper_readable.md`
 - `paper_readable.pdf`
 - `artifacts/` 中间产物目录
-
