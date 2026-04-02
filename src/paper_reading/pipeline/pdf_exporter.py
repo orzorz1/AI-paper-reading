@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import platform
 import re
 from pathlib import Path
 from xml.sax.saxutils import escape
 
 from ..errors import DependencyMissingError, PipelineExecutionError
+
+_CN_FONT = "CNFont"
+_CN_FONT_BOLD = "CNFont-Bold"
 
 
 class MarkdownPdfExporter:
@@ -26,15 +30,15 @@ class MarkdownPdfExporter:
             getSampleStyleSheet,
             ParagraphStyle,
             pdfmetrics,
-            UnicodeCIDFont,
+            TTFont,
         ) = _import_reportlab()
-        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+        font_name = _register_chinese_fonts(pdfmetrics, TTFont)
 
         styles = getSampleStyleSheet()
         body_style = ParagraphStyle(
             "BodyCN",
             parent=styles["BodyText"],
-            fontName="STSong-Light",
+            fontName=font_name,
             fontSize=10.5,
             leading=16,
             spaceAfter=10,
@@ -44,7 +48,7 @@ class MarkdownPdfExporter:
         title_style = ParagraphStyle(
             "TitleCN",
             parent=styles["Title"],
-            fontName="STSong-Light",
+            fontName=font_name,
             fontSize=19,
             leading=24,
             spaceAfter=10,
@@ -53,7 +57,7 @@ class MarkdownPdfExporter:
         subtitle_style = ParagraphStyle(
             "SubtitleCN",
             parent=body_style,
-            fontName="STSong-Light",
+            fontName=font_name,
             fontSize=13,
             leading=18,
             spaceAfter=12,
@@ -64,7 +68,7 @@ class MarkdownPdfExporter:
         section_style = ParagraphStyle(
             "SectionCN",
             parent=styles["Heading2"],
-            fontName="STSong-Light",
+            fontName=font_name,
             fontSize=15.5,
             leading=22,
             spaceBefore=16,
@@ -80,7 +84,7 @@ class MarkdownPdfExporter:
         quote_style = ParagraphStyle(
             "QuoteCN",
             parent=body_style,
-            fontName="STSong-Light",
+            fontName=font_name,
             textColor=colors.HexColor("#374151"),
             backColor=colors.HexColor("#f3f4f6"),
             borderPadding=8,
@@ -92,7 +96,7 @@ class MarkdownPdfExporter:
         list_style = ParagraphStyle(
             "ListCN",
             parent=body_style,
-            fontName="STSong-Light",
+            fontName=font_name,
             leftIndent=18,
             firstLineIndent=0,
             bulletIndent=4,
@@ -168,7 +172,7 @@ def _import_reportlab() -> tuple:
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        from reportlab.pdfbase.ttfonts import TTFont
         from reportlab.platypus import Image as RLImage
         from reportlab.platypus import KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer
     except ImportError as exc:
@@ -186,8 +190,47 @@ def _import_reportlab() -> tuple:
         getSampleStyleSheet,
         ParagraphStyle,
         pdfmetrics,
-        UnicodeCIDFont,
+        TTFont,
     )
+
+
+def _register_chinese_fonts(pdfmetrics, TTFont) -> str:
+    """注册中文 TTF 字体，返回字体名称。找不到则回退到 CID 字体。"""
+    system = platform.system()
+
+    # (font_path, regular_subfont_index, bold_subfont_index_or_None)
+    candidates: list[tuple[str, int, int | None]] = []
+    if system == "Darwin":
+        songti = "/System/Library/Fonts/Supplemental/Songti.ttc"
+        if Path(songti).exists():
+            candidates.append((songti, 6, 1))  # SC-Regular, SC-Bold
+    if system == "Linux":
+        for p in [
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+        ]:
+            if Path(p).exists():
+                candidates.append((p, 0, None))
+    if system == "Windows":
+        simsun = "C:/Windows/Fonts/simsun.ttc"
+        if Path(simsun).exists():
+            candidates.append((simsun, 0, None))
+
+    for font_path, regular_idx, bold_idx in candidates:
+        try:
+            pdfmetrics.registerFont(TTFont(_CN_FONT, font_path, subfontIndex=regular_idx))
+            if bold_idx is not None:
+                pdfmetrics.registerFont(TTFont(_CN_FONT_BOLD, font_path, subfontIndex=bold_idx))
+                pdfmetrics.registerFontFamily(_CN_FONT, normal=_CN_FONT, bold=_CN_FONT_BOLD)
+            return _CN_FONT
+        except Exception:
+            continue
+
+    # 回退到 CID 字体
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+    return "STSong-Light"
 
 
 def _parse_markdown_blocks(markdown_text: str) -> list[tuple[str, str]]:
@@ -257,19 +300,12 @@ def _parse_markdown_blocks(markdown_text: str) -> list[tuple[str, str]]:
 def _format_inline(text: str) -> str:
     escaped = escape(_prepare_text_for_pdf(text))
     escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
-    escaped = re.sub(r"`(.+?)`", r"<font face=\"Courier\">\1</font>", escaped)
+    escaped = re.sub(r"`(.+?)`", r"<font face='Courier'>\1</font>", escaped)
     return escaped.replace("\n", "<br/>")
 
 
 def _prepare_text_for_pdf(text: str) -> str:
-    """尽量减少中英混排时的异常断行。
-
-    ReportLab 在中文段落里遇到短英文、数字和中文量词挨在一起时，
-    有时会把 `391个`、`7万` 这类片段拆开。这里用 word joiner 把
-    “ASCII/数字 token 与紧邻的中文字符”轻量绑定，避免阅读体验很差。
-    """
-    text = re.sub(r"(?<=[A-Za-z0-9])(?=[\u4e00-\u9fff])", "\u2060", text)
-    text = re.sub(r"(?<=[\u4e00-\u9fff])(?=[A-Za-z][A-Za-z0-9.-]{1,})", "\u2060", text)
+    text = re.sub("[\u2060\u200b\u200c\u200d\ufeff]", "", text)
     return text
 
 
