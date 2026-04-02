@@ -94,11 +94,29 @@ LAYOUT_MODEL_PATH=./models/doclayout_yolo_docstructbench_imgsz1024.pt
 paper-read build /path/to/paper.pdf
 ```
 
+带生成偏好的示例：
+
+```bash
+paper-read build /path/to/paper.pdf --focus method --length medium
+paper-read build /path/to/paper.pdf --focus experiment --length short
+paper-read build /path/to/paper.pdf --focus experiment --length long
+```
+
 批量处理某个目录下这一层的所有 PDF：
 
 ```bash
 paper-read batch /path/to/folder
 ```
+
+其中：
+
+- `--focus`：`method` 或 `experiment`
+- `--length`：`short`、`medium`、`long`
+
+当前默认是：
+
+- `--focus method`
+- `--length medium`
 
 ## 输出
 

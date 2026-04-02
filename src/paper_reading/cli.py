@@ -26,6 +26,16 @@ def _validate_lang(lang: str) -> None:
         raise typer.BadParameter("V1 目前只支持 zh-CN 输出。")
 
 
+def _validate_content_focus(content_focus: str) -> None:
+    if content_focus not in {"method", "experiment"}:
+        raise typer.BadParameter("内容偏好只支持 method 或 experiment。")
+
+
+def _validate_output_length(output_length: str) -> None:
+    if output_length not in {"short", "medium", "long"}:
+        raise typer.BadParameter("篇幅只支持 short、medium 或 long。")
+
+
 def _print_build_result(result: BuildResult) -> None:
     typer.secho(f"Markdown 已生成：{result.markdown_path}", fg=typer.colors.GREEN)
     if result.pdf_path:
@@ -44,8 +54,10 @@ def _build_single(
     title: Optional[str],
     abstract: Optional[str],
     output_dir: Optional[Path],
-    max_figures: int,
+    max_figures: Optional[int],
     lang: str,
+    content_focus: str,
+    output_length: str,
 ) -> BuildResult:
     options = BuildOptions(
         pdf_path=pdf_path,
@@ -54,6 +66,8 @@ def _build_single(
         output_dir=output_dir,
         max_figures=max_figures,
         lang=lang,
+        content_focus=content_focus,
+        output_length=output_length,
     )
     return orchestrator.build(options)
 
@@ -64,14 +78,18 @@ def build(
     title: Optional[str] = typer.Option(None, "--title", help="可选，手动覆盖标题"),
     abstract: Optional[str] = typer.Option(None, "--abstract", help="可选，手动覆盖摘要"),
     output_dir: Optional[Path] = typer.Option(None, "--output-dir", file_okay=False, help="输出目录"),
-    max_figures: int = typer.Option(3, "--max-figures", min=1, max=10, help="最多选择多少张关键图"),
+    max_figures: Optional[int] = typer.Option(None, "--max-figures", min=1, max=10, help="可选，手动覆盖自动选图数量"),
     lang: str = typer.Option("zh-CN", "--lang", help="输出语言，V1 只支持 zh-CN"),
+    content_focus: str = typer.Option("method", "--focus", help="内容偏好：method 或 experiment"),
+    output_length: str = typer.Option("medium", "--length", help="篇幅：short、medium、long"),
     config: Optional[Path] = typer.Option(None, "--config", exists=True, dir_okay=False, help="可选 YAML 配置文件"),
     verbose: bool = typer.Option(False, "--verbose", help="输出更详细的调试日志"),
 ) -> None:
     """构建单篇论文阅读版 Markdown 和 PDF。"""
     try:
         _validate_lang(lang)
+        _validate_content_focus(content_focus)
+        _validate_output_length(output_length)
         configure_logging(verbose=verbose)
         app_config = load_app_config(config)
         orchestrator = PaperReadingOrchestrator(app_config)
@@ -83,6 +101,8 @@ def build(
             output_dir=output_dir,
             max_figures=max_figures,
             lang=lang,
+            content_focus=content_focus,
+            output_length=output_length,
         )
     except PaperReadingError as exc:
         typer.secho(f"构建失败：{exc}", fg=typer.colors.RED, err=True)
@@ -94,14 +114,18 @@ def build(
 @app.command()
 def batch(
     folder_path: Path = typer.Argument(..., exists=True, file_okay=False, readable=True, help="包含 PDF 的目录路径"),
-    max_figures: int = typer.Option(3, "--max-figures", min=1, max=10, help="最多选择多少张关键图"),
+    max_figures: Optional[int] = typer.Option(None, "--max-figures", min=1, max=10, help="可选，手动覆盖自动选图数量"),
     lang: str = typer.Option("zh-CN", "--lang", help="输出语言，V1 只支持 zh-CN"),
+    content_focus: str = typer.Option("method", "--focus", help="内容偏好：method 或 experiment"),
+    output_length: str = typer.Option("medium", "--length", help="篇幅：short、medium、long"),
     config: Optional[Path] = typer.Option(None, "--config", exists=True, dir_okay=False, help="可选 YAML 配置文件"),
     verbose: bool = typer.Option(False, "--verbose", help="输出更详细的调试日志"),
     fail_fast: bool = typer.Option(False, "--fail-fast", help="遇到失败时立即停止批量处理"),
 ) -> None:
     """批量处理某个目录下这一层的所有 PDF。"""
     _validate_lang(lang)
+    _validate_content_focus(content_focus)
+    _validate_output_length(output_length)
     configure_logging(verbose=verbose)
     app_config = load_app_config(config)
     orchestrator = PaperReadingOrchestrator(app_config)
@@ -129,6 +153,8 @@ def batch(
                 output_dir=None,
                 max_figures=max_figures,
                 lang=lang,
+                content_focus=content_focus,
+                output_length=output_length,
             )
         except PaperReadingError as exc:
             failures.append((pdf_path, str(exc)))

@@ -25,7 +25,11 @@ from paper_reading.pipeline.composer import MarkdownComposer
 from paper_reading.pipeline.orchestrator import (
     PaperReadingOrchestrator,
     _build_body_text,
+    _build_body_page_limits,
+    _enforce_selection_strategy,
+    _filter_candidates_to_body,
     _build_paper_context,
+    _resolve_max_figures,
 )
 
 
@@ -121,6 +125,154 @@ class _FakePdfExporter:
 
 
 class OrchestratorTests(unittest.TestCase):
+    def test_resolve_max_figures_uses_length_defaults(self) -> None:
+        self.assertEqual(_resolve_max_figures("short", None), 1)
+        self.assertEqual(_resolve_max_figures("medium", None), 3)
+        self.assertEqual(_resolve_max_figures("long", None), 5)
+        self.assertEqual(_resolve_max_figures("long", 4), 4)
+
+    def test_enforce_selection_strategy_prefers_result_for_short_experiment(self) -> None:
+        candidates = [
+            FigureCandidate(
+                normalized_id="Fig1",
+                page=1,
+                caption_text="Figure 1: Overview pipeline.",
+                caption_bbox=BoundingBox(x0=0, y0=0, x1=1, y1=1),
+                figure_bbox=BoundingBox(x0=0, y0=0, x1=1, y1=1),
+                image_path="Fig1.png",
+                match_score=0.9,
+                source="layout+rule",
+                match_options=[],
+            ),
+            FigureCandidate(
+                normalized_id="Fig2",
+                page=2,
+                caption_text="Figure 2: Experimental results on benchmark.",
+                caption_bbox=BoundingBox(x0=0, y0=0, x1=1, y1=1),
+                figure_bbox=BoundingBox(x0=0, y0=0, x1=1, y1=1),
+                image_path="Fig2.png",
+                match_score=0.9,
+                source="layout+rule",
+                match_options=[],
+            ),
+        ]
+        selected = [
+            SelectedFigure(normalized_id="Fig1", reason="方法主线", importance_rank=1),
+            SelectedFigure(normalized_id="Fig2", reason="实验结果", importance_rank=2),
+        ]
+
+        enforced = _enforce_selection_strategy(
+            selected=selected,
+            candidates=candidates,
+            content_focus="experiment",
+            output_length="short",
+            max_figures=1,
+        )
+
+        self.assertEqual(len(enforced), 1)
+        self.assertEqual(enforced[0].normalized_id, "Fig2")
+
+    def test_enforce_selection_strategy_supplements_method_and_result_for_long(self) -> None:
+        candidates = [
+            FigureCandidate(
+                normalized_id="Fig1",
+                page=1,
+                caption_text="Figure 1: Overview pipeline.",
+                caption_bbox=BoundingBox(x0=0, y0=0, x1=1, y1=1),
+                figure_bbox=BoundingBox(x0=0, y0=0, x1=1, y1=1),
+                image_path="Fig1.png",
+                match_score=0.9,
+                source="layout+rule",
+                match_options=[],
+            ),
+            FigureCandidate(
+                normalized_id="Fig2",
+                page=2,
+                caption_text="Figure 2: Experimental comparison on benchmark.",
+                caption_bbox=BoundingBox(x0=0, y0=0, x1=1, y1=1),
+                figure_bbox=BoundingBox(x0=0, y0=0, x1=1, y1=1),
+                image_path="Fig2.png",
+                match_score=0.9,
+                source="layout+rule",
+                match_options=[],
+            ),
+        ]
+        selected = [SelectedFigure(normalized_id="Fig1", reason="方法主线", importance_rank=1)]
+
+        enforced = _enforce_selection_strategy(
+            selected=selected,
+            candidates=candidates,
+            content_focus="method",
+            output_length="long",
+            max_figures=5,
+        )
+
+        self.assertEqual([item.normalized_id for item in enforced[:2]], ["Fig1", "Fig2"])
+
+    def test_enforce_selection_strategy_keeps_tables_without_counting_against_figures(self) -> None:
+        candidates = [
+            FigureCandidate(
+                normalized_id="Fig1",
+                page=1,
+                caption_text="Figure 1: Overview pipeline.",
+                caption_bbox=BoundingBox(x0=0, y0=0, x1=1, y1=1),
+                figure_bbox=BoundingBox(x0=0, y0=0, x1=1, y1=1),
+                image_path="Fig1.png",
+                match_score=0.9,
+                source="layout+rule",
+                match_options=[],
+            ),
+            FigureCandidate(
+                normalized_id="Fig2",
+                page=2,
+                caption_text="Figure 2: Experimental comparison on benchmark.",
+                caption_bbox=BoundingBox(x0=0, y0=0, x1=1, y1=1),
+                figure_bbox=BoundingBox(x0=0, y0=0, x1=1, y1=1),
+                image_path="Fig2.png",
+                match_score=0.9,
+                source="layout+rule",
+                match_options=[],
+            ),
+            FigureCandidate(
+                normalized_id="Table1",
+                page=3,
+                caption_text="Table 1: Main benchmark results.",
+                caption_bbox=BoundingBox(x0=0, y0=0, x1=1, y1=1),
+                figure_bbox=BoundingBox(x0=0, y0=0, x1=1, y1=1),
+                image_path="Table1.png",
+                match_score=0.9,
+                source="layout+rule",
+                match_options=[],
+            ),
+            FigureCandidate(
+                normalized_id="Table2",
+                page=4,
+                caption_text="Table 2: Ablation results.",
+                caption_bbox=BoundingBox(x0=0, y0=0, x1=1, y1=1),
+                figure_bbox=BoundingBox(x0=0, y0=0, x1=1, y1=1),
+                image_path="Table2.png",
+                match_score=0.9,
+                source="layout+rule",
+                match_options=[],
+            ),
+        ]
+        selected = [
+            SelectedFigure(normalized_id="Fig1", reason="方法主线", importance_rank=1),
+            SelectedFigure(normalized_id="Fig2", reason="实验结果", importance_rank=2),
+            SelectedFigure(normalized_id="Table1", reason="主结果表", importance_rank=3),
+            SelectedFigure(normalized_id="Table2", reason="消融表", importance_rank=4),
+        ]
+
+        enforced = _enforce_selection_strategy(
+            selected=selected,
+            candidates=candidates,
+            content_focus="experiment",
+            output_length="short",
+            max_figures=1,
+        )
+
+        self.assertEqual([item.normalized_id for item in enforced], ["Fig2", "Table1", "Table2"])
+
     def test_build_body_text_excludes_references_and_appendix(self) -> None:
         parsed_paper = ParsedPaper(
             metadata=PaperMetadata(title="测试论文", abstract="摘要", source_pdf="demo.pdf"),
@@ -162,6 +314,93 @@ class OrchestratorTests(unittest.TestCase):
         self.assertIn("[Introduction]", paper_context)
         self.assertIn("[Method]", paper_context)
         self.assertIn("[Experiment]", paper_context)
+
+    def test_build_body_page_limits_stops_at_references(self) -> None:
+        parsed_paper = ParsedPaper(
+            metadata=PaperMetadata(title="测试论文", abstract="摘要", source_pdf="demo.pdf"),
+            pages=[
+                ParsedPage(
+                    page=1,
+                    width=400,
+                    height=400,
+                    text="正文内容",
+                    rendered_image_path="page1.png",
+                    text_blocks=[
+                        PageTextBlock(page=1, bbox=BoundingBox(x0=0, y0=100, x1=100, y1=130), text="正文内容"),
+                    ],
+                ),
+                ParsedPage(
+                    page=2,
+                    width=400,
+                    height=400,
+                    text="Method\n...\nReferences\n[1] Paper",
+                    rendered_image_path="page2.png",
+                    text_blocks=[
+                        PageTextBlock(page=2, bbox=BoundingBox(x0=0, y0=120, x1=100, y1=150), text="Method"),
+                        PageTextBlock(page=2, bbox=BoundingBox(x0=0, y0=300, x1=100, y1=330), text="References"),
+                    ],
+                ),
+                ParsedPage(
+                    page=3,
+                    width=400,
+                    height=400,
+                    text="Appendix",
+                    rendered_image_path="page3.png",
+                    text_blocks=[
+                        PageTextBlock(page=3, bbox=BoundingBox(x0=0, y0=80, x1=100, y1=110), text="Appendix"),
+                    ],
+                ),
+            ],
+            full_text="",
+        )
+
+        limits = _build_body_page_limits(parsed_paper)
+
+        self.assertEqual(limits[1], 400)
+        self.assertEqual(limits[2], 300)
+        self.assertNotIn(3, limits)
+
+    def test_filter_candidates_to_body_removes_reference_and_appendix_candidates(self) -> None:
+        limits = {1: 400, 2: 300}
+        candidates = [
+            FigureCandidate(
+                normalized_id="Fig1",
+                page=1,
+                caption_text="Figure 1: Main figure.",
+                caption_bbox=BoundingBox(x0=0, y0=200, x1=1, y1=220),
+                figure_bbox=BoundingBox(x0=0, y0=100, x1=1, y1=180),
+                image_path="Fig1.png",
+                match_score=0.9,
+                source="layout+rule",
+                match_options=[],
+            ),
+            FigureCandidate(
+                normalized_id="Table1",
+                page=2,
+                caption_text="Table 1: Reference table.",
+                caption_bbox=BoundingBox(x0=0, y0=320, x1=1, y1=340),
+                figure_bbox=BoundingBox(x0=0, y0=260, x1=1, y1=310),
+                image_path="Table1.png",
+                match_score=0.9,
+                source="layout+rule",
+                match_options=[],
+            ),
+            FigureCandidate(
+                normalized_id="Fig3",
+                page=3,
+                caption_text="Figure 3: Appendix figure.",
+                caption_bbox=BoundingBox(x0=0, y0=120, x1=1, y1=140),
+                figure_bbox=BoundingBox(x0=0, y0=60, x1=1, y1=110),
+                image_path="Fig3.png",
+                match_score=0.9,
+                source="layout+rule",
+                match_options=[],
+            ),
+        ]
+
+        filtered = _filter_candidates_to_body(candidates, limits)
+
+        self.assertEqual([item.normalized_id for item in filtered], ["Fig1"])
 
     def test_build_uses_pdf_directory_and_stem_for_default_output_dir(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

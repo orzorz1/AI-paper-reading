@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..llm import OpenAICompatibleClient
-from ..models import DocumentSection, FigureCandidate, FigureExplanation, FinalDocument, StoryOutline
+from ..models import ContentFocus, DocumentSection, FigureCandidate, FigureExplanation, FinalDocument, OutputLength, StoryOutline
 from ..utils import relative_posix_path, truncate_text
 
 
@@ -82,6 +82,8 @@ class MarkdownComposer:
         ordered_candidates: list[FigureCandidate],
         explanations: list[FigureExplanation],
         output_dir: Path,
+        content_focus: ContentFocus = "method",
+        output_length: OutputLength = "medium",
     ) -> str:
         """优先交给 LLM 直接写 Markdown；缺少 LLM 时回退到规则渲染。"""
         final_document = self.compose(
@@ -121,8 +123,25 @@ class MarkdownComposer:
         system_prompt = (
             "你要直接撰写一份可阅读的中文 Markdown，用来帮助读者在 1 到 2 分钟内读懂一篇 AI 论文。"
             "你会拿到论文标题、摘要、较长上下文、结构化提炼结果，以及每张已选图片的路径和解释。"
-            "请把这些材料整合成自然、连贯、信息密度高的 Markdown。"
+            "请把这些材料整合成自然、连贯、信息密度高的 Markdown，并服从给定的内容偏好和篇幅要求。"
         )
+        focus_instruction = {
+            "method": "正文整体偏向方法，优先把方法主线讲清楚。",
+            "experiment": "正文整体偏向实验，优先把评测任务、实验设计和结果含义讲清楚。",
+        }[content_focus]
+        length_instruction = {
+            "short": "短篇输出：尽量压到 1 张图和 2 到 3 个小节，整体非常凝练。",
+            "medium": "中篇输出：保持当前默认长度和信息密度。",
+            "long": "长篇输出：允许更充实，通常写 4 到 6 个小节。无论偏向方法还是偏向实验，都要同时覆盖方法和实验。",
+        }[output_length]
+        structure_instruction = {
+            ("method", "short"): "小节布局建议：导读摘要 -> 问题与任务 -> 方法主线。实验只在确实关键时用 1 段带过。",
+            ("method", "medium"): "小节布局建议：研究背景与任务定义 -> 方法设计与核心机制 -> 可选的实验结果。",
+            ("method", "long"): "小节布局建议：研究背景 -> 方法设计 -> 关键模块/数据 -> 实验结果与分析。方法部分篇幅必须明显多于实验。",
+            ("experiment", "short"): "小节布局建议：导读摘要 -> 研究背景与任务定义 -> 方法主线 -> 结果结论。即使偏向实验，也要先把动机和方法讲清楚。",
+            ("experiment", "medium"): "小节布局建议：研究背景与任务定义 -> 方法主线 -> 评测设定与实验结果。实验部分要更突出，但顺序上仍然先方法后实验。",
+            ("experiment", "long"): "小节布局建议：研究背景 -> 方法主线 -> 评测设定 -> 实验结果 -> 结果解读。实验部分篇幅必须明显多于方法，但顺序上必须先讲方法再讲实验。",
+        }[(content_focus, output_length)]
         user_prompt = (
             "写作要求：\n"
             "- 最终输出必须是 Markdown 正文，不要输出 JSON，不要加解释前言\n"
@@ -137,6 +156,11 @@ class MarkdownComposer:
             "- 对常见缩写，例如 CNN、LLM、SOTA，不要专门解释\n"
             "- 不要写英文全称，正文只保留必要中文括注\n"
             "- 不要套用固定模板句，尽量让语气自然，直接成文\n\n"
+            f"内容偏好：{content_focus}\n"
+            f"篇幅：{output_length}\n"
+            f"{focus_instruction}\n"
+            f"{length_instruction}\n"
+            f"{structure_instruction}\n\n"
             f"论文标题：{title}\n\n"
             f"论文摘要：{abstract}\n\n"
             f"论文上下文：{truncate_text(paper_context, 32000)}\n\n"

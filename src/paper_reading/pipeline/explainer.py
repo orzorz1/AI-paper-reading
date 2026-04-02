@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..llm import OpenAICompatibleClient
-from ..models import FigureCandidate, FigureExplanation
+from ..models import ContentFocus, FigureCandidate, FigureExplanation, OutputLength
 from ..utils import truncate_text
 
 
@@ -25,16 +25,31 @@ class FigureExplainer:
         abstract: str,
         paper_context: str,
         surrounding_text: str,
+        content_focus: ContentFocus,
+        output_length: OutputLength,
     ) -> FigureExplanation:
+        focus_instruction = {
+            "method": "解释时更偏向帮助读者理解方法设计和模块作用。",
+            "experiment": "解释时更偏向帮助读者理解实验设置、结果含义和对比关系。",
+        }[content_focus]
+        length_instruction = {
+            "short": "整体更凝练，每段尽量压到 1 句。",
+            "medium": "保持当前默认长度。",
+            "long": "允许稍微展开，但仍然要短，避免流水账。",
+        }[output_length]
         system_prompt = (
             "你要把论文里的单张图解释给非专业读者。"
             "输出必须是简体中文 JSON。"
             "不要复述太多原始 caption，要强调这张图应该怎么看。"
-            "整体必须简短，适合融入 1 到 2 分钟的 Markdown 阅读短文。"
+            "整体必须简短，适合融入给定篇幅的 Markdown 阅读短文。"
         )
         user_prompt = (
             f"论文标题：{paper_title}\n\n"
             f"论文摘要：{abstract}\n\n"
+            f"内容偏好：{content_focus}\n"
+            f"篇幅：{output_length}\n"
+            f"{focus_instruction}\n"
+            f"{length_instruction}\n\n"
             f"论文上下文：{truncate_text(paper_context, 18000)}\n\n"
             f"图编号：{candidate.normalized_id}\n"
             f"图角色：{figure_role}\n"

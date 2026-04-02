@@ -30,6 +30,21 @@ class PdfExporterTests(unittest.TestCase):
             ],
         )
 
+    def test_parse_markdown_blocks_recognizes_h3(self) -> None:
+        markdown = "# 主标题\n\n## 二级\n\n### 三级小节\n\n正文。\n"
+
+        blocks = _parse_markdown_blocks(markdown)
+
+        self.assertEqual(
+            blocks,
+            [
+                ("h1", "主标题"),
+                ("h2", "二级"),
+                ("h3", "三级小节"),
+                ("paragraph", "正文。"),
+            ],
+        )
+
     def test_prepare_text_for_pdf_binds_ascii_and_cjk_boundaries(self) -> None:
         text = "覆盖80个物体类别和391个部件类别，并支持MRES-32M训练。"
 

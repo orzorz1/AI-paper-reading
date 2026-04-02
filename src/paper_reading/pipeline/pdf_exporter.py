@@ -81,6 +81,20 @@ class MarkdownPdfExporter:
             wordWrap="CJK",
             splitLongWords=False,
         )
+        subsection_style = ParagraphStyle(
+            "SubsectionCN",
+            parent=styles["Heading3"],
+            fontName=font_name,
+            fontSize=12.5,
+            leading=18,
+            spaceBefore=12,
+            spaceAfter=8,
+            textColor=colors.HexColor("#1e293b"),
+            borderWidth=0,
+            leftIndent=0,
+            wordWrap="CJK",
+            splitLongWords=False,
+        )
         quote_style = ParagraphStyle(
             "QuoteCN",
             parent=body_style,
@@ -128,6 +142,9 @@ class MarkdownPdfExporter:
                 continue
             if block_type == "h2":
                 story.append(_keep_short_block_together(Paragraph(_format_inline(payload), section_style), Spacer(1, 4), KeepTogether))
+                continue
+            if block_type == "h3":
+                story.append(_keep_short_block_together(Paragraph(_format_inline(payload), subsection_style), Spacer(1, 2), KeepTogether))
                 continue
             if block_type == "quote":
                 story.append(_keep_short_block_together(Paragraph(_format_inline(payload), quote_style), Spacer(1, 0), KeepTogether))
@@ -264,15 +281,20 @@ def _parse_markdown_blocks(markdown_text: str) -> list[tuple[str, str]]:
             flush_quote()
             blocks.append(("pagebreak", ""))
             continue
-        if stripped.startswith("# "):
+        if stripped.startswith("### "):
             flush_paragraph()
             flush_quote()
-            blocks.append(("h1", stripped[2:].strip()))
+            blocks.append(("h3", stripped[4:].strip()))
             continue
         if stripped.startswith("## "):
             flush_paragraph()
             flush_quote()
             blocks.append(("h2", stripped[3:].strip()))
+            continue
+        if stripped.startswith("# "):
+            flush_paragraph()
+            flush_quote()
+            blocks.append(("h1", stripped[2:].strip()))
             continue
         if stripped.startswith("> "):
             flush_paragraph()
@@ -306,6 +328,8 @@ def _format_inline(text: str) -> str:
 
 def _prepare_text_for_pdf(text: str) -> str:
     text = re.sub("[\u2060\u200b\u200c\u200d\ufeff]", "", text)
+    text = re.sub(r"(?<=[A-Za-z0-9])(?=[\u4e00-\u9fff])", "\u2060", text)
+    text = re.sub(r"(?<=[\u4e00-\u9fff])(?=[A-Za-z][A-Za-z0-9.-]{1,})", "\u2060", text)
     return text
 
 

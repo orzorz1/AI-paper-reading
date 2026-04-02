@@ -11,7 +11,7 @@ from ..config import AppConfig
 from ..errors import PipelineExecutionError, SelectionValidationError
 from ..llm import OpenAICompatibleClient
 from ..logging_utils import get_logger
-from ..models import BuildOptions, BuildResult, FigureCandidate, FigureExplanation, LayoutRegion, ParsedPaper
+from ..models import BuildOptions, BuildResult, ContentFocus, FigureCandidate, FigureExplanation, LayoutRegion, OutputLength, ParsedPaper
 from ..utils import dump_json, dump_model_json, dump_models_json, ensure_dir, truncate_text
 from .composer import MarkdownComposer
 from .explainer import FigureExplainer
@@ -67,6 +67,7 @@ class PaperReadingOrchestrator:
         explicit_output_dir = options.output_dir
         output_dir = ensure_dir(explicit_output_dir or self._default_output_dir(pdf_path))
         artifacts_dir = ensure_dir(output_dir / "artifacts")
+        resolved_max_figures = _resolve_max_figures(options.output_length, options.max_figures)
 
         warnings: list[str] = []
         self._logger.info("开始处理论文：%s", pdf_path)
@@ -87,8 +88,10 @@ class PaperReadingOrchestrator:
                 "title": options.title,
                 "abstract": options.abstract,
                 "output_dir": str(output_dir),
-                "max_figures": options.max_figures,
+                "max_figures": resolved_max_figures,
                 "lang": options.lang,
+                "content_focus": options.content_focus,
+                "output_length": options.output_length,
                 "config": self._config.model_dump(mode="json"),
             },
         )
@@ -121,27 +124,57 @@ class PaperReadingOrchestrator:
         candidates = self._matcher.build_candidates(parsed_paper, layout_by_page, figures_dir)
         if not candidates:
             raise PipelineExecutionError("没有识别到任何图表候选，无法继续生成结果。")
+        body_page_limits = _build_body_page_limits(parsed_paper)
+        candidates = _filter_candidates_to_body(candidates, body_page_limits)
+        if not candidates:
+            raise PipelineExecutionError("正文部分没有识别到任何图表候选，无法继续生成结果。")
         self._logger.info("图表候选生成完成：共 %d 个候选", len(candidates))
         dump_models_json(artifacts_dir / "figure_candidates.json", candidates)
 
-        selection_candidates = [item for item in candidates if item.normalized_id.startswith("Fig")]
-        if selection_candidates:
-            self._logger.info("已过滤表格候选，供选图使用的图片候选共 %d 个", len(selection_candidates))
+        figure_candidates = [item for item in candidates if item.normalized_id.startswith("Fig")]
+        table_candidates = [item for item in candidates if item.normalized_id.startswith("Table")]
+        if figure_candidates:
+            self._logger.info("正文图片候选共 %d 个", len(figure_candidates))
         else:
-            selection_candidates = candidates
-            warnings.append("未识别到图片候选，已回退为使用全部候选（可能包含表格）。")
-            self._logger.warning("未识别到图片候选，已回退为使用全部候选。")
+            warnings.append("正文中未识别到图片候选。")
+            self._logger.warning("正文中未识别到图片候选。")
+        if options.content_focus == "experiment":
+            self._logger.info("实验模式下正文表格候选共 %d 个", len(table_candidates))
 
         self._logger.info("开始选择关键图...")
         body_text = _build_body_text(parsed_paper)
         paper_context = _build_paper_context(parsed_paper, body_text)
-        selected = self._selector.select(
+        selected_figures = self._selector.select(
             title=parsed_paper.metadata.title,
             abstract=parsed_paper.metadata.abstract,
             full_text=body_text,
-            candidates=selection_candidates,
-            max_figures=options.max_figures,
+            candidates=figure_candidates or candidates,
+            max_figures=resolved_max_figures,
+            content_focus=options.content_focus,
+            output_length=options.output_length,
+            candidate_kind="figure",
         )
+        selected_figures = _enforce_selection_strategy(
+            selected=selected_figures,
+            candidates=figure_candidates or candidates,
+            content_focus=options.content_focus,
+            output_length=options.output_length,
+            max_figures=resolved_max_figures,
+        )
+        selected_tables = []
+        if options.content_focus == "experiment" and table_candidates:
+            self._logger.info("开始筛选实验相关表格...")
+            selected_tables = self._selector.select(
+                title=parsed_paper.metadata.title,
+                abstract=parsed_paper.metadata.abstract,
+                full_text=body_text,
+                candidates=table_candidates,
+                max_figures=len(table_candidates),
+                content_focus=options.content_focus,
+                output_length=options.output_length,
+                candidate_kind="table",
+            )
+        selected = _reindex_selected(selected_figures + selected_tables)
         candidate_map = {item.normalized_id: item for item in candidates}
         for item in selected:
             if item.normalized_id not in candidate_map:
@@ -157,6 +190,8 @@ class PaperReadingOrchestrator:
             paper_context=paper_context,
             selected_figures=selected,
             candidates_by_id=candidate_map,
+            content_focus=options.content_focus,
+            output_length=options.output_length,
         )
         dump_model_json(artifacts_dir / "story_outline.json", outline)
 
@@ -175,6 +210,8 @@ class PaperReadingOrchestrator:
                 abstract=parsed_paper.metadata.abstract,
                 paper_context=paper_context,
                 surrounding_text=page_text,
+                content_focus=options.content_focus,
+                output_length=options.output_length,
             )
             explanations.append(explanation)
         dump_models_json(artifacts_dir / "figure_explanations.json", explanations)
@@ -206,6 +243,8 @@ class PaperReadingOrchestrator:
             ordered_candidates=ordered_candidates,
             explanations=explanations,
             output_dir=output_dir,
+            content_focus=options.content_focus,
+            output_length=options.output_length,
         )
         markdown_path.write_text(markdown_text, encoding="utf-8")
         self._logger.info("Markdown 生成完成：%s", markdown_path)
@@ -248,6 +287,150 @@ def _get_page_text(parsed_paper: ParsedPaper, page_number: int) -> str:
     return parsed_paper.full_text
 
 
+def _resolve_max_figures(output_length: OutputLength, explicit_max_figures: int | None) -> int:
+    if explicit_max_figures is not None:
+        return explicit_max_figures
+    if output_length == "short":
+        return 1
+    if output_length == "long":
+        return 5
+    return 3
+
+
+def _enforce_selection_strategy(
+    *,
+    selected: list,
+    candidates: list[FigureCandidate],
+    content_focus: ContentFocus,
+    output_length: OutputLength,
+    max_figures: int,
+) -> list:
+    candidate_map = {item.normalized_id: item for item in candidates}
+    selected_by_id = {item.normalized_id: item for item in selected if item.normalized_id in candidate_map}
+    ranked_selected = sorted(selected_by_id.values(), key=lambda item: item.importance_rank)
+    selected_tables = [item for item in ranked_selected if item.normalized_id.startswith("Table")]
+    selected_figures = [item for item in ranked_selected if item.normalized_id.startswith("Fig")]
+
+    if output_length == "short":
+        preferred_roles = ["result", "support", "method", "problem"] if content_focus == "experiment" else ["method", "problem", "support", "result"]
+        chosen = _pick_first_by_roles(selected_figures, candidate_map, preferred_roles) or (selected_figures[0] if selected_figures else None)
+        return _reindex_selected(([chosen] if chosen else []) + selected_tables)
+
+    if output_length == "medium":
+        if content_focus == "method":
+            preferred_roles = ["method", "problem", "support", "result"]
+        else:
+            preferred_roles = ["result", "support", "method", "problem"]
+        reordered = _reorder_selected_by_roles(selected_figures, candidate_map, preferred_roles)
+        return _reindex_selected(reordered[:max_figures] + selected_tables)
+
+    figure_candidates = [item for item in candidates if item.normalized_id.startswith("Fig")]
+    reordered = _build_long_form_selection(selected_figures, candidate_map, figure_candidates, max_figures)
+    return _reindex_selected(reordered[:max_figures] + selected_tables)
+
+
+def _build_long_form_selection(
+    selected: list,
+    candidate_map: dict[str, FigureCandidate],
+    all_candidates: list[FigureCandidate],
+    max_figures: int,
+) -> list:
+    chosen: list = []
+    method_item = _pick_first_by_roles(selected, candidate_map, ["method", "problem"])
+    result_item = _pick_first_by_roles(selected, candidate_map, ["result"])
+
+    if method_item is None:
+        method_item = _build_supplemental_selected(all_candidates, selected, ["method", "problem"], "按长篇策略补充方法图")
+    if result_item is None:
+        result_item = _build_supplemental_selected(all_candidates, selected, ["result"], "按长篇策略补充实验图")
+
+    for item in [method_item, result_item]:
+        if item is not None and item.normalized_id not in {picked.normalized_id for picked in chosen}:
+            chosen.append(item)
+
+    reordered = _reorder_selected_by_roles(selected, candidate_map, ["problem", "method", "support", "result"])
+    for item in reordered:
+        if item.normalized_id not in {picked.normalized_id for picked in chosen}:
+            chosen.append(item)
+        if len(chosen) >= max_figures:
+            break
+
+    while len(chosen) < max_figures:
+        supplemental = _build_supplemental_selected(all_candidates, chosen, ["support", "problem", "method", "result"], "按长篇策略补充关键图")
+        if supplemental is None or supplemental.normalized_id in {picked.normalized_id for picked in chosen}:
+            break
+        chosen.append(supplemental)
+    return chosen
+
+
+def _reorder_selected_by_roles(selected: list, candidate_map: dict[str, FigureCandidate], role_order: list[str]) -> list:
+    buckets: dict[str, list] = {role: [] for role in role_order}
+    other_items: list = []
+    for item in selected:
+        role = _guess_figure_role(candidate_map[item.normalized_id])
+        if role in buckets:
+            buckets[role].append(item)
+        else:
+            other_items.append(item)
+    ordered: list = []
+    for role in role_order:
+        ordered.extend(sorted(buckets[role], key=lambda current: current.importance_rank))
+    ordered.extend(sorted(other_items, key=lambda current: current.importance_rank))
+    return ordered
+
+
+def _pick_first_by_roles(selected: list, candidate_map: dict[str, FigureCandidate], roles: list[str]):
+    for role in roles:
+        for item in selected:
+            if _guess_figure_role(candidate_map[item.normalized_id]) == role:
+                return item
+    return None
+
+
+def _build_supplemental_selected(
+    candidates: list[FigureCandidate],
+    existing: list,
+    roles: list[str],
+    reason: str,
+):
+    existing_ids = {item.normalized_id for item in existing}
+    role_set = set(roles)
+    for candidate in candidates:
+        if candidate.normalized_id in existing_ids:
+            continue
+        if _guess_figure_role(candidate) in role_set:
+            from ..models import SelectedFigure
+
+            return SelectedFigure(normalized_id=candidate.normalized_id, reason=reason, importance_rank=999)
+    return None
+
+
+def _reindex_selected(selected: list) -> list:
+    from ..models import SelectedFigure
+
+    normalized: list[SelectedFigure] = []
+    for index, item in enumerate([current for current in selected if current is not None], start=1):
+        normalized.append(
+            SelectedFigure(
+                normalized_id=item.normalized_id,
+                reason=item.reason,
+                importance_rank=index,
+            )
+        )
+    return normalized
+
+
+def _guess_figure_role(candidate: FigureCandidate) -> str:
+    text = f"{candidate.normalized_id} {candidate.caption_text}".lower()
+    if any(token in text for token in ("result", "results", "experiment", "evaluation", "comparison", "benchmark", "ablation", "performance", "qualitative", "quantitative")):
+        return "result"
+    if any(token in text for token in ("overview", "pipeline", "framework", "architecture", "method", "approach", "model", "workflow")):
+        return "method"
+    if any(token in text for token in ("task", "motivation", "example", "scenario", "problem", "setting")):
+        return "problem"
+    return "support"
+
+
 def _build_body_text(parsed_paper: ParsedPaper) -> str:
     parts: list[str] = []
     for page in parsed_paper.pages:
@@ -278,7 +461,11 @@ def _get_figure_context(parsed_paper: ParsedPaper, page_number: int) -> str:
     parts: list[str] = []
     for page in parsed_paper.pages:
         if start_page <= page.page <= end_page:
-            parts.append(f"[第{page.page}页]\n{page.text}")
+            page_text = _strip_back_matter_from_page(page.text)
+            if page_text:
+                parts.append(f"[第{page.page}页]\n{page_text}")
+        if _page_starts_back_matter(page.text):
+            break
     return truncate_text("\n\n".join(parts), 12000)
 
 
@@ -324,6 +511,31 @@ def _build_section_context(body_text: str) -> str:
         if content:
             parts.append(f"[{label}]\n{content}")
     return "\n\n".join(parts)
+
+
+def _build_body_page_limits(parsed_paper: ParsedPaper) -> dict[int, float]:
+    limits: dict[int, float] = {}
+    for page in parsed_paper.pages:
+        cutoff_y = page.height
+        for block in page.text_blocks:
+            if BACK_MATTER_HEADING_PATTERN.search(block.text.strip()):
+                cutoff_y = min(cutoff_y, block.bbox.y0)
+        limits[page.page] = cutoff_y
+        if _page_starts_back_matter(page.text):
+            break
+    return limits
+
+
+def _filter_candidates_to_body(candidates: list[FigureCandidate], body_page_limits: dict[int, float]) -> list[FigureCandidate]:
+    filtered: list[FigureCandidate] = []
+    for candidate in candidates:
+        cutoff_y = body_page_limits.get(candidate.page)
+        if cutoff_y is None:
+            continue
+        if candidate.caption_bbox.y0 >= cutoff_y or candidate.figure_bbox.y0 >= cutoff_y:
+            continue
+        filtered.append(candidate)
+    return filtered
 
 
 def _extract_section_snippets(body_text: str) -> list[tuple[str, str]]:

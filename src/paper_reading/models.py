@@ -7,6 +7,9 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+ContentFocus = Literal["method", "experiment"]
+OutputLength = Literal["short", "medium", "long"]
+
 
 class BoundingBox(BaseModel):
     """PDF 或图像坐标系下的矩形框。"""
@@ -227,5 +230,7 @@ class BuildOptions(BaseModel):
     title: Optional[str] = None
     abstract: Optional[str] = None
     output_dir: Optional[Path] = None
-    max_figures: int = 3
+    max_figures: Optional[int] = None
     lang: str = "zh-CN"
+    content_focus: ContentFocus = "method"
+    output_length: OutputLength = "medium"
