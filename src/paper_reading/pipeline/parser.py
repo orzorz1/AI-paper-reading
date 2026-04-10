@@ -22,6 +22,10 @@ AFFILIATION_HINT_PATTERN = re.compile(
     r"\b(?:university|institute|school|laboratory|lab|department|academy|college|casia|baai)\b",
     re.IGNORECASE,
 )
+INVALID_METADATA_TITLE_PATTERN = re.compile(
+    r"^(?:untitled|title|unknown|null|none|nan|microsoft word.*|adobe.*|arxiv|paper)$",
+    re.IGNORECASE,
+)
 
 
 def extract_title_from_page_dict(page_dict: dict[str, Any], page_height: float, page_width: float | None = None) -> str:
@@ -72,6 +76,25 @@ def extract_title_from_page_dict(page_dict: dict[str, Any], page_height: float, 
     return normalize_whitespace(best_candidate["text"])
 
 
+def extract_title_from_pdf_metadata(metadata: dict[str, Any] | None) -> str:
+    """从 PDF metadata 里读取标题，并过滤常见无效值。"""
+    if not metadata:
+        return ""
+    raw_title = metadata.get("title") or metadata.get("Title")
+    if raw_title is None:
+        return ""
+    title = normalize_whitespace(str(raw_title))
+    if not title or len(title) < 6:
+        return ""
+    if INVALID_METADATA_TITLE_PATTERN.match(title):
+        return ""
+    if ARXIV_PATTERN.search(title):
+        return ""
+    if title.lower().startswith(("doi:", "http://", "https://")):
+        return ""
+    return title
+
+
 def extract_abstract_from_text(text: str) -> str:
     """从首页或全文文本中提取 abstract 段落。"""
     match = ABSTRACT_PATTERN.search(text)
@@ -110,6 +133,7 @@ class PDFParser:
         *,
         override_title: Optional[str] = None,
         override_abstract: Optional[str] = None,
+        max_pages: int = 40,
     ) -> ParsedPaper:
         try:
             import fitz
@@ -129,7 +153,9 @@ class PDFParser:
         first_page_text = ""
         fallback_paragraphs: list[str] = []
 
-        for page_index in range(len(document)):
+        page_count = min(len(document), max_pages)
+
+        for page_index in range(page_count):
             page = document.load_page(page_index)
             page_dict = page.get_text("dict")
             page_text = normalize_whitespace(page.get_text("text"))
@@ -183,11 +209,13 @@ class PDFParser:
             )
 
         full_text = "\n\n".join(part for part in full_text_parts if part)
-        title = override_title or extract_title_from_page_dict(
+        metadata_title = extract_title_from_pdf_metadata(getattr(document, "metadata", None))
+        heuristic_title = extract_title_from_page_dict(
             first_page_dict or {},
             pages[0].height if pages else 0,
             pages[0].width if pages else None,
         )
+        title = override_title or metadata_title or heuristic_title
         abstract = override_abstract or extract_abstract_from_text(first_page_text) or extract_abstract_from_text(full_text)
         fallback_text = build_abstract_fallback(fallback_paragraphs)
         metadata = PaperMetadata(

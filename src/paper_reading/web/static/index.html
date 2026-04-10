@@ -35,13 +35,22 @@
             </select>
           </label>
         </div>
+        <div class="row row--single">
+          <label class="field">
+            <span class="label">语言风格</span>
+            <select id="style" name="style" disabled>
+              <option value="professional" selected>专业化</option>
+              <option value="colloquial">口语化</option>
+            </select>
+          </label>
+        </div>
 
         <div class="api-block">
           <label class="switch-row">
             <input type="checkbox" id="api-custom" name="api_custom" value="true" />
             <span class="switch-label">使用自定义 API</span>
           </label>
-          <div id="api-fields" class="api-fields" hidden>
+          <div id="api-fields" class="api-fields is-hidden" hidden>
             <label class="api-field">
               <span class="label">Base URL</span>
               <input
@@ -112,6 +121,9 @@
         </div>
 
         <p id="status" class="status" role="status"></p>
+        <p id="generation-warning" class="generation-warning" hidden>
+          生成过程中请不要刷新页面、关闭标签页或退出浏览器，否则当前生成内容可能会丢失。
+        </p>
         <p id="error" class="error" hidden></p>
       </section>
 

@@ -95,6 +95,10 @@ body {
   margin-bottom: 1rem;
 }
 
+.row--single {
+  grid-template-columns: 1fr;
+}
+
 .api-block {
   margin-top: 0.25rem;
   padding-top: 1rem;
@@ -129,6 +133,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
+}
+
+.api-fields.is-hidden {
+  display: none;
 }
 
 .api-field {
@@ -280,6 +288,17 @@ select:disabled {
   min-height: 1.25rem;
   font-size: 0.9rem;
   color: var(--muted);
+}
+
+.generation-warning {
+  margin: 0.55rem 0 0;
+  padding: 0.7rem 0.8rem;
+  border-radius: 8px;
+  border: 1px solid rgba(217, 120, 130, 0.35);
+  background: rgba(217, 120, 130, 0.08);
+  color: #f0c2c8;
+  font-size: 0.86rem;
+  line-height: 1.6;
 }
 
 .error {

@@ -36,6 +36,11 @@ def _validate_output_length(output_length: str) -> None:
         raise typer.BadParameter("篇幅只支持 short、medium 或 long。")
 
 
+def _validate_writing_style(writing_style: str) -> None:
+    if writing_style not in {"professional", "colloquial"}:
+        raise typer.BadParameter("风格只支持 professional 或 colloquial。")
+
+
 def _print_build_result(result: BuildResult) -> None:
     typer.secho(f"Markdown 已生成：{result.markdown_path}", fg=typer.colors.GREEN)
     if result.pdf_path:
@@ -55,9 +60,11 @@ def _build_single(
     abstract: Optional[str],
     output_dir: Optional[Path],
     max_figures: Optional[int],
+    max_pages: int,
     lang: str,
     content_focus: str,
     output_length: str,
+    writing_style: str,
 ) -> BuildResult:
     options = BuildOptions(
         pdf_path=pdf_path,
@@ -65,9 +72,11 @@ def _build_single(
         abstract=abstract,
         output_dir=output_dir,
         max_figures=max_figures,
+        max_pages=max_pages,
         lang=lang,
         content_focus=content_focus,
         output_length=output_length,
+        writing_style=writing_style,
     )
     return orchestrator.build(options)
 
@@ -79,9 +88,11 @@ def build(
     abstract: Optional[str] = typer.Option(None, "--abstract", help="可选，手动覆盖摘要"),
     output_dir: Optional[Path] = typer.Option(None, "--output-dir", file_okay=False, help="输出目录"),
     max_figures: Optional[int] = typer.Option(None, "--max-figures", min=1, max=10, help="可选，手动覆盖自动选图数量"),
+    max_pages: int = typer.Option(40, "--max-pages", min=1, help="最多处理前 N 页，默认 40"),
     lang: str = typer.Option("zh-CN", "--lang", help="输出语言，V1 只支持 zh-CN"),
     content_focus: str = typer.Option("method", "--focus", help="内容偏好：method 或 experiment"),
     output_length: str = typer.Option("medium", "--length", help="篇幅：short、medium、long"),
+    writing_style: str = typer.Option("professional", "--style", help="风格：professional 或 colloquial"),
     config: Optional[Path] = typer.Option(None, "--config", exists=True, dir_okay=False, help="可选 YAML 配置文件"),
     verbose: bool = typer.Option(False, "--verbose", help="输出更详细的调试日志"),
 ) -> None:
@@ -90,6 +101,7 @@ def build(
         _validate_lang(lang)
         _validate_content_focus(content_focus)
         _validate_output_length(output_length)
+        _validate_writing_style(writing_style)
         configure_logging(verbose=verbose)
         app_config = load_app_config(config)
         orchestrator = PaperReadingOrchestrator(app_config)
@@ -100,9 +112,11 @@ def build(
             abstract=abstract,
             output_dir=output_dir,
             max_figures=max_figures,
+            max_pages=max_pages,
             lang=lang,
             content_focus=content_focus,
             output_length=output_length,
+            writing_style=writing_style,
         )
     except PaperReadingError as exc:
         typer.secho(f"构建失败：{exc}", fg=typer.colors.RED, err=True)
@@ -115,9 +129,11 @@ def build(
 def batch(
     folder_path: Path = typer.Argument(..., exists=True, file_okay=False, readable=True, help="包含 PDF 的目录路径"),
     max_figures: Optional[int] = typer.Option(None, "--max-figures", min=1, max=10, help="可选，手动覆盖自动选图数量"),
+    max_pages: int = typer.Option(40, "--max-pages", min=1, help="每篇最多处理前 N 页，默认 40"),
     lang: str = typer.Option("zh-CN", "--lang", help="输出语言，V1 只支持 zh-CN"),
     content_focus: str = typer.Option("method", "--focus", help="内容偏好：method 或 experiment"),
     output_length: str = typer.Option("medium", "--length", help="篇幅：short、medium、long"),
+    writing_style: str = typer.Option("professional", "--style", help="风格：professional 或 colloquial"),
     config: Optional[Path] = typer.Option(None, "--config", exists=True, dir_okay=False, help="可选 YAML 配置文件"),
     verbose: bool = typer.Option(False, "--verbose", help="输出更详细的调试日志"),
     fail_fast: bool = typer.Option(False, "--fail-fast", help="遇到失败时立即停止批量处理"),
@@ -126,6 +142,7 @@ def batch(
     _validate_lang(lang)
     _validate_content_focus(content_focus)
     _validate_output_length(output_length)
+    _validate_writing_style(writing_style)
     configure_logging(verbose=verbose)
     app_config = load_app_config(config)
     orchestrator = PaperReadingOrchestrator(app_config)
@@ -152,9 +169,11 @@ def batch(
                 abstract=None,
                 output_dir=None,
                 max_figures=max_figures,
+                max_pages=max_pages,
                 lang=lang,
                 content_focus=content_focus,
                 output_length=output_length,
+                writing_style=writing_style,
             )
         except PaperReadingError as exc:
             failures.append((pdf_path, str(exc)))

@@ -23,6 +23,7 @@ from ..pipeline.orchestrator import PaperReadingOrchestrator
 from ..utils import ensure_dir
 
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+_MAX_WEB_PAGES = 30
 
 # 全局互斥：同一时间只允许一个 /api/build 任务执行，避免共享编排器/版面模型并发问题。
 _BUILD_LOCK = threading.Lock()
@@ -60,6 +61,11 @@ def _validate_focus(focus: str) -> None:
 def _validate_length(length: str) -> None:
     if length not in {"short", "medium", "long"}:
         raise ValueError("篇幅只支持 short、medium、long")
+
+
+def _validate_style(style: str) -> None:
+    if style not in {"professional", "colloquial"}:
+        raise ValueError("风格只支持 professional 或 colloquial")
 
 
 def _truthy_form(value: str) -> bool:
@@ -107,6 +113,7 @@ def _run_build(
     output_dir: Path,
     content_focus: str,
     output_length: str,
+    writing_style: str,
     orchestrator: PaperReadingOrchestrator,
 ) -> BuildResult:
     options = BuildOptions(
@@ -115,9 +122,11 @@ def _run_build(
         abstract=None,
         output_dir=output_dir,
         max_figures=None,
+        max_pages=_MAX_WEB_PAGES,
         lang="zh-CN",
         content_focus=content_focus,  # type: ignore[arg-type]
         output_length=output_length,  # type: ignore[arg-type]
+        writing_style=writing_style,  # type: ignore[arg-type]
     )
     return orchestrator.build(options)
 
@@ -142,6 +151,7 @@ def create_app() -> Any:
         file: UploadFile = File(...),
         focus: str = Form("method"),
         length: str = Form("medium"),
+        style: str = Form("professional"),
         api_custom: str = Form("false"),
         openai_base_url: str = Form(""),
         openai_api_key: str = Form(""),
@@ -158,6 +168,7 @@ def create_app() -> Any:
                 file=file,
                 focus=focus,
                 length=length,
+                style=style,
                 api_custom=api_custom,
                 openai_base_url=openai_base_url,
                 openai_api_key=openai_api_key,
@@ -173,6 +184,7 @@ def create_app() -> Any:
         file: UploadFile,
         focus: str,
         length: str,
+        style: str,
         api_custom: str,
         openai_base_url: str,
         openai_api_key: str,
@@ -184,11 +196,13 @@ def create_app() -> Any:
             try:
                 _validate_focus(focus)
                 _validate_length(length)
+                _validate_style(style)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
         else:
             focus = "method"
             length = "medium"
+            style = "professional"
 
         if not file.filename or not file.filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail="请上传一个 PDF 文件")
@@ -221,6 +235,7 @@ def create_app() -> Any:
                 output_dir=output_dir,
                 content_focus=focus,
                 output_length=length,
+                writing_style=style,
                 orchestrator=orchestrator,
             )
 

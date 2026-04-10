@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -20,6 +21,7 @@ from .matcher import FigureMatcher
 from .parser import PDFParser
 from .planner import StoryPlanner
 from .pdf_exporter import MarkdownPdfExporter
+from .report_structure import ReportStructurePlanner
 from .selector import FigureSelector
 
 
@@ -34,6 +36,7 @@ class PaperReadingOrchestrator:
         layout_detector: Optional[LayoutDetector] = None,
         matcher: Optional[FigureMatcher] = None,
         selector: Optional[FigureSelector] = None,
+        structure_planner: Optional[ReportStructurePlanner] = None,
         planner: Optional[StoryPlanner] = None,
         explainer: Optional[FigureExplainer] = None,
         composer: Optional[MarkdownComposer] = None,
@@ -50,16 +53,17 @@ class PaperReadingOrchestrator:
         )
         self._matcher = matcher or FigureMatcher(crop_dpi=config.layout.crop_dpi)
         client = None
-        if selector is None or planner is None or explainer is None:
+        if selector is None or structure_planner is None or planner is None or explainer is None or composer is None:
             client = OpenAICompatibleClient(config.openai)
         self._selector = selector or FigureSelector(client, config.openai.text_model)
+        self._structure_planner = structure_planner or ReportStructurePlanner(client, config.openai.text_model)
         self._planner = planner or StoryPlanner(client, config.openai.text_model)
         self._explainer = explainer or FigureExplainer(client, config.openai.vision_model)
         self._composer = composer or MarkdownComposer(client, config.openai.text_model)
         self._pdf_exporter = pdf_exporter or MarkdownPdfExporter()
 
     def with_openai_settings(self, openai: OpenAISettings) -> "PaperReadingOrchestrator":
-        """共享版面解析、PDF 解析等非 LLM 组件，仅替换大模型接口与相关调用链。"""
+        """共享非 LLM 组件，仅替换大模型配置，供 Web 端按请求覆写 API 参数。"""
         merged_config = self._config.model_copy(update={"openai": openai})
         client = OpenAICompatibleClient(openai)
         return PaperReadingOrchestrator(
@@ -68,6 +72,7 @@ class PaperReadingOrchestrator:
             layout_detector=self._layout_detector,
             matcher=self._matcher,
             selector=FigureSelector(client, openai.text_model),
+            structure_planner=ReportStructurePlanner(client, openai.text_model),
             planner=StoryPlanner(client, openai.text_model),
             explainer=FigureExplainer(client, openai.vision_model),
             composer=MarkdownComposer(client, openai.text_model),
@@ -93,6 +98,7 @@ class PaperReadingOrchestrator:
             artifacts_dir,
             override_title=options.title,
             override_abstract=options.abstract,
+            max_pages=options.max_pages,
         )
         figures_dir = ensure_dir(artifacts_dir / "figures")
         layout_dir = ensure_dir(artifacts_dir / "layout")
@@ -105,9 +111,11 @@ class PaperReadingOrchestrator:
                 "abstract": options.abstract,
                 "output_dir": str(output_dir),
                 "max_figures": resolved_max_figures,
+                "max_pages": options.max_pages,
                 "lang": options.lang,
                 "content_focus": options.content_focus,
                 "output_length": options.output_length,
+                "writing_style": options.writing_style,
                 "config": self._config.model_dump(mode="json"),
             },
         )
@@ -138,58 +146,70 @@ class PaperReadingOrchestrator:
             self._logger.info("第 %d 页识别到 %d 个版面区域", page.page, len(regions))
 
         candidates = self._matcher.build_candidates(parsed_paper, layout_by_page, figures_dir)
-        if not candidates:
-            raise PipelineExecutionError("没有识别到任何图表候选，无法继续生成结果。")
         body_page_limits = _build_body_page_limits(parsed_paper)
         candidates = _filter_candidates_to_body(candidates, body_page_limits)
-        if not candidates:
-            raise PipelineExecutionError("正文部分没有识别到任何图表候选，无法继续生成结果。")
         self._logger.info("图表候选生成完成：共 %d 个候选", len(candidates))
         dump_models_json(artifacts_dir / "figure_candidates.json", candidates)
 
         figure_candidates = [item for item in candidates if item.normalized_id.startswith("Fig")]
         table_candidates = [item for item in candidates if item.normalized_id.startswith("Table")]
+        if not candidates:
+            warnings.append("正文中没有识别到任何图表候选，已降级为纯文本总结。")
+            self._logger.warning("正文中没有识别到任何图表候选，已降级为纯文本总结。")
         if figure_candidates:
             self._logger.info("正文图片候选共 %d 个", len(figure_candidates))
-        else:
+        elif candidates:
             warnings.append("正文中未识别到图片候选。")
             self._logger.warning("正文中未识别到图片候选。")
         if options.content_focus == "experiment":
             self._logger.info("实验模式下正文表格候选共 %d 个", len(table_candidates))
 
-        self._logger.info("开始选择关键图...")
         body_text = _build_body_text(parsed_paper)
         paper_context = _build_paper_context(parsed_paper, body_text)
-        selected_figures = self._selector.select(
+        self._logger.info("开始规划报告结构...")
+        report_structure = self._structure_planner.plan(
             title=parsed_paper.metadata.title,
             abstract=parsed_paper.metadata.abstract,
-            full_text=body_text,
-            candidates=figure_candidates or candidates,
-            max_figures=resolved_max_figures,
+            paper_context=paper_context,
             content_focus=options.content_focus,
             output_length=options.output_length,
-            candidate_kind="figure",
+            writing_style=options.writing_style,
         )
-        selected_figures = _enforce_selection_strategy(
-            selected=selected_figures,
-            candidates=figure_candidates or candidates,
-            content_focus=options.content_focus,
-            output_length=options.output_length,
-            max_figures=resolved_max_figures,
-        )
+        dump_model_json(artifacts_dir / "report_structure.json", report_structure)
         selected_tables = []
-        if options.content_focus == "experiment" and table_candidates:
-            self._logger.info("开始筛选实验相关表格...")
-            selected_tables = self._selector.select(
+        selected_figures = []
+        if candidates:
+            self._logger.info("开始选择关键图...")
+            selected_figures = self._selector.select(
                 title=parsed_paper.metadata.title,
                 abstract=parsed_paper.metadata.abstract,
                 full_text=body_text,
-                candidates=table_candidates,
-                max_figures=len(table_candidates),
+                candidates=figure_candidates or candidates,
+                max_figures=resolved_max_figures,
                 content_focus=options.content_focus,
                 output_length=options.output_length,
-                candidate_kind="table",
+                candidate_kind="figure",
             )
+            selected_figures = _enforce_selection_strategy(
+                selected=selected_figures,
+                candidates=figure_candidates or candidates,
+                content_focus=options.content_focus,
+                output_length=options.output_length,
+                max_figures=resolved_max_figures,
+            )
+            if options.content_focus == "experiment" and table_candidates:
+                self._logger.info("开始筛选实验相关表格...")
+                selected_tables = self._selector.select(
+                    title=parsed_paper.metadata.title,
+                    abstract=parsed_paper.metadata.abstract,
+                    full_text=body_text,
+                    candidates=table_candidates,
+                    max_figures=len(table_candidates),
+                    content_focus=options.content_focus,
+                    output_length=options.output_length,
+                    candidate_kind="table",
+                )
+
         selected = _reindex_selected(selected_figures + selected_tables)
         candidate_map = {item.normalized_id: item for item in candidates}
         for item in selected:
@@ -204,10 +224,12 @@ class PaperReadingOrchestrator:
             abstract=parsed_paper.metadata.abstract,
             full_text=body_text,
             paper_context=paper_context,
+            report_structure=report_structure,
             selected_figures=selected,
             candidates_by_id=candidate_map,
             content_focus=options.content_focus,
             output_length=options.output_length,
+            writing_style=options.writing_style,
         )
         dump_model_json(artifacts_dir / "story_outline.json", outline)
 
@@ -228,6 +250,7 @@ class PaperReadingOrchestrator:
                 surrounding_text=page_text,
                 content_focus=options.content_focus,
                 output_length=options.output_length,
+                writing_style=options.writing_style,
             )
             explanations.append(explanation)
         dump_models_json(artifacts_dir / "figure_explanations.json", explanations)
@@ -236,6 +259,7 @@ class PaperReadingOrchestrator:
         final_document = self._composer.compose(
             title=parsed_paper.metadata.title,
             outline=outline,
+            report_structure=report_structure,
             ordered_candidates=ordered_candidates,
             explanations=explanations,
             output_dir=output_dir,
@@ -248,6 +272,7 @@ class PaperReadingOrchestrator:
             abstract=parsed_paper.metadata.abstract,
             paper_context=paper_context,
             outline=outline,
+            report_structure=report_structure,
             selected_figures=[
                 {
                     "normalized_id": item.normalized_id,
@@ -261,7 +286,9 @@ class PaperReadingOrchestrator:
             output_dir=output_dir,
             content_focus=options.content_focus,
             output_length=options.output_length,
+            writing_style=options.writing_style,
         )
+        markdown_text = _relocate_markdown_assets(markdown_text, output_dir)
         markdown_path.write_text(markdown_text, encoding="utf-8")
         self._logger.info("Markdown 生成完成：%s", markdown_path)
         pdf_path = output_dir / "paper_readable.pdf"
@@ -469,6 +496,50 @@ def _build_paper_context(parsed_paper: ParsedPaper, body_text: str) -> str:
     if heading_parts:
         parts.append("[章节标题]\n" + "\n".join(heading_parts))
     return "\n\n".join(part for part in parts if part.strip())
+
+
+def _relocate_markdown_assets(markdown_text: str, output_dir: Path) -> str:
+    assets_dir = ensure_dir(output_dir / "assets")
+    copied_paths: dict[str, str] = {}
+
+    def replace(match: re.Match[str]) -> str:
+        alt_text = match.group(1)
+        raw_path = match.group(2).strip()
+        if raw_path in copied_paths:
+            return f"![{alt_text}]({copied_paths[raw_path]})"
+
+        source_path = Path(raw_path)
+        if not source_path.is_absolute():
+            source_path = (output_dir / raw_path).resolve()
+        if not source_path.exists():
+            return match.group(0)
+
+        target_path = _deduplicate_asset_path(assets_dir, source_path.name, source_path)
+        shutil.copy2(source_path, target_path)
+        relative_target = target_path.relative_to(output_dir).as_posix()
+        copied_paths[raw_path] = relative_target
+        return f"![{alt_text}]({relative_target})"
+
+    return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", replace, markdown_text)
+
+
+def _deduplicate_asset_path(assets_dir: Path, filename: str, source_path: Path) -> Path:
+    candidate = assets_dir / filename
+    if not candidate.exists():
+        return candidate
+    try:
+        if candidate.samefile(source_path):
+            return candidate
+    except FileNotFoundError:
+        return candidate
+
+    stem = Path(filename).stem
+    suffix = Path(filename).suffix
+    for index in range(2, 1000):
+        next_candidate = assets_dir / f"{stem}-{index}{suffix}"
+        if not next_candidate.exists():
+            return next_candidate
+    raise PipelineExecutionError(f"资源文件冲突过多，无法复制到：{assets_dir}")
 
 
 def _get_figure_context(parsed_paper: ParsedPaper, page_number: int) -> str:

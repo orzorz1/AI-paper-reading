@@ -23,12 +23,15 @@ src/paper_reading/pipeline/orchestrator.py
 src/paper_reading/pipeline/parser.py
 src/paper_reading/pipeline/pdf_exporter.py
 src/paper_reading/pipeline/planner.py
+src/paper_reading/pipeline/report_structure.py
 src/paper_reading/pipeline/selector.py
 src/paper_reading/web/__init__.py
 src/paper_reading/web/server.py
 src/paper_reading/web/static/app.css
 src/paper_reading/web/static/app.js
+src/paper_reading/web/static/example.pdf
 src/paper_reading/web/static/index.html
+src/paper_reading/web/static/skm.jpg
 tests/test_cli.py
 tests/test_composer.py
 tests/test_config.py

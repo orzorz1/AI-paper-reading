@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 ContentFocus = Literal["method", "experiment"]
 OutputLength = Literal["short", "medium", "long"]
+WritingStyle = Literal["professional", "colloquial"]
 
 
 class BoundingBox(BaseModel):
@@ -167,16 +168,57 @@ class SelectedFigure(BaseModel):
     importance_rank: int
 
 
+class ReportStructure(BaseModel):
+    """最终报告的结构建议。"""
+
+    title_translation_label: str = "title_translation"
+    one_sentence_summary_label: str = "one_sentence_summary"
+    structure_rationale: str = ""
+    sections: list["ReportSectionBlueprint"] = Field(
+        default_factory=lambda: [
+            ReportSectionBlueprint(
+                key="motivation",
+                title="研究背景与任务定义",
+                guidance="交代研究背景、问题设定和文章想解决的核心问题。",
+            ),
+            ReportSectionBlueprint(
+                key="method_core",
+                title="方法设计与核心机制",
+                guidance="解释文章的核心方法、分析路径、论证框架或实现机制。",
+            ),
+            ReportSectionBlueprint(
+                key="result_summary",
+                title="实验结果与结论",
+                guidance="概述实验结果、案例分析、主要发现或结论；如果文章不以实验为主，也可以写结果与讨论。",
+            ),
+        ]
+    )
+
+
+class ReportSectionBlueprint(BaseModel):
+    """报告结构中的单个章节蓝图。"""
+
+    key: str
+    title: str
+    guidance: str
+
+
 class StoryOutline(BaseModel):
     """整体阅读结构。"""
 
     title_translation: str = ""
     one_sentence_summary: str
-    motivation: str
-    method_core: str
-    result_summary: str = ""
+    sections: list["StorySection"] = Field(default_factory=list)
     figure_roles: dict[str, str]
     takeaways: list[str] = Field(default_factory=list)
+
+
+class StorySection(BaseModel):
+    """提纲中的单个正文小节。"""
+
+    key: str
+    title: str
+    content: str
 
 
 class FigureExplanation(BaseModel):
@@ -231,6 +273,8 @@ class BuildOptions(BaseModel):
     abstract: Optional[str] = None
     output_dir: Optional[Path] = None
     max_figures: Optional[int] = None
+    max_pages: int = 40
     lang: str = "zh-CN"
     content_focus: ContentFocus = "method"
     output_length: OutputLength = "medium"
+    writing_style: WritingStyle = "professional"

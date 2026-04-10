@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional
 
 from ..llm import OpenAICompatibleClient
-from ..models import ContentFocus, DocumentSection, FigureCandidate, FigureExplanation, FinalDocument, OutputLength, StoryOutline
+from ..models import ContentFocus, DocumentSection, FigureCandidate, FigureExplanation, FinalDocument, OutputLength, ReportStructure, StoryOutline, WritingStyle
 from ..utils import relative_posix_path, truncate_text
 
 
@@ -28,36 +29,20 @@ class MarkdownComposer:
         *,
         title: str,
         outline: StoryOutline,
+        report_structure: ReportStructure | None = None,
         ordered_candidates: list[FigureCandidate],
         explanations: list[FigureExplanation],
         output_dir: Path,
     ) -> FinalDocument:
+        report_structure = report_structure or ReportStructure()
         explanation_by_id = {item.normalized_id: item for item in explanations}
-        role_buckets = self._group_figures_by_role(ordered_candidates, outline.figure_roles)
-        problem_item = role_buckets.get("problem") or role_buckets.get("support")
-        method_item = role_buckets.get("method")
-        result_item = role_buckets.get("result")
-        used_ids = {
-            item.normalized_id
-            for item in [problem_item, method_item, result_item]
-            if item is not None
-        }
-
-        sections = [
-            self._build_problem_section(outline, problem_item, explanation_by_id, output_dir),
-            self._build_method_section(outline, method_item, explanation_by_id, output_dir),
-        ]
-        sections.extend(
-            self._build_additional_figure_sections(
-                ordered_candidates=ordered_candidates,
-                explanation_by_id=explanation_by_id,
-                output_dir=output_dir,
-                used_ids=used_ids,
-            )
+        sections = self._build_dynamic_sections(
+            outline=outline,
+            report_structure=report_structure,
+            ordered_candidates=ordered_candidates,
+            explanation_by_id=explanation_by_id,
+            output_dir=output_dir,
         )
-        result_section = self._build_result_section(outline, result_item, explanation_by_id, output_dir)
-        if result_section is not None:
-            sections.append(result_section)
 
         asset_paths = [section.image_path for section in sections if section.image_path]
         return FinalDocument(
@@ -78,17 +63,21 @@ class MarkdownComposer:
         abstract: str,
         paper_context: str,
         outline: StoryOutline,
+        report_structure: ReportStructure | None = None,
         selected_figures: list[dict[str, str | int]],
         ordered_candidates: list[FigureCandidate],
         explanations: list[FigureExplanation],
         output_dir: Path,
         content_focus: ContentFocus = "method",
         output_length: OutputLength = "medium",
+        writing_style: WritingStyle = "professional",
     ) -> str:
         """优先交给 LLM 直接写 Markdown；缺少 LLM 时回退到规则渲染。"""
+        report_structure = report_structure or ReportStructure()
         final_document = self.compose(
             title=title,
             outline=outline,
+            report_structure=report_structure,
             ordered_candidates=ordered_candidates,
             explanations=explanations,
             output_dir=output_dir,
@@ -124,6 +113,7 @@ class MarkdownComposer:
             "你要直接撰写一份可阅读的中文 Markdown，用来帮助读者在 1 到 2 分钟内读懂一篇 AI 论文。"
             "你会拿到论文标题、摘要、较长上下文、结构化提炼结果，以及每张已选图片的路径和解释。"
             "请把这些材料整合成自然、连贯、信息密度高的 Markdown，并服从给定的内容偏好和篇幅要求。"
+            "只能依据给定材料写作，不能补充文章里没有明确出现的事实、贡献层级或历史判断。"
         )
         focus_instruction = {
             "method": "正文整体偏向方法，优先把方法主线讲清楚。",
@@ -134,6 +124,15 @@ class MarkdownComposer:
             "medium": "中篇输出：保持当前默认长度和信息密度。",
             "long": "长篇输出：允许更充实，通常写 4 到 6 个小节。无论偏向方法还是偏向实验，都要同时覆盖方法和实验。",
         }[output_length]
+        formula_instruction = {
+            "short": "除非特别必要，否则不要主动引入公式。",
+            "medium": "如果论文里有对理解方法、结论或核心论证确实重要的公式，可以保留关键公式，并配一句简短解释；不要写成公式堆砌。",
+            "long": "如果论文里存在对理解主线重要的公式，可以保留关键公式，并在正文里配一句通俗解释。",
+        }[output_length]
+        style_instruction = {
+            "professional": "标题和正文都要更书面、正式、专业，少用口语化表达。",
+            "colloquial": "标题和正文都要更平实、更好懂，像在给读者讲明白，但仍要保持文档质量。",
+        }[writing_style]
         structure_instruction = {
             ("method", "short"): "小节布局建议：导读摘要 -> 问题与任务 -> 方法主线。实验只在确实关键时用 1 段带过。",
             ("method", "medium"): "小节布局建议：研究背景与任务定义 -> 方法设计与核心机制 -> 可选的实验结果。",
@@ -145,9 +144,14 @@ class MarkdownComposer:
         user_prompt = (
             "写作要求：\n"
             "- 最终输出必须是 Markdown 正文，不要输出 JSON，不要加解释前言\n"
+            "- 只能输出一份完整文档，从一级标题开始，到最后一个小节结束；不要在中途重新从标题开始再写一遍\n"
+            "- 一级标题只能出现 1 次，中文题目只能出现 1 次，`> 导读摘要：...` 只能出现 1 次\n"
+            "- 不要在 `# 英文标题` 之前额外输出任何文字\n"
+            "- 写完最后一个小节后就直接结束，不要追加第二版内容，不要重复任何已经写过的小节\n"
             "- 开头必须依次包含：一级标题（英文原题）、一行中文题目、一个 `> 导读摘要：...` 引导块\n"
             "- 中文题目单独占一行，不要写成 `**中文题目：** xxx`\n"
             "- 图片必须使用给定的相对路径，格式严格写成 `![FigX](path)`\n"
+            "- 每张图片前后都必须各留一个空行，确保 Markdown 可以把图片正确解析成独立块，不要把图片紧贴上一段或下一段文字\n"
             "- 对给定的所有已选图片，都要在正文中自然使用一次，不要漏掉\n"
             "- 不要把内容写成“关键图1/2/3”这种机械结构\n"
             "- 可以自由决定 3 到 5 个正式小节标题，但要自然、书面，不要太口语化\n"
@@ -156,14 +160,21 @@ class MarkdownComposer:
             "- 对常见缩写，例如 CNN、LLM、SOTA，不要专门解释\n"
             "- 不要写英文全称，正文只保留必要中文括注\n"
             "- 不要套用固定模板句，尽量让语气自然，直接成文\n\n"
+            "- 不要擅自写“首次提出”“首次建立”“首次实现”“开创性”等表述，除非给定材料里明确这样说\n"
+            "- 如果文章只是给出方法、量表、实验或讨论，就按证据如实表述，不要上升成更强的历史判断\n\n"
+            "- 输出前请自检：标题没有重复，小节没有重复，文档没有第二次从头开始\n\n"
             f"内容偏好：{content_focus}\n"
             f"篇幅：{output_length}\n"
+            f"风格：{writing_style}\n"
             f"{focus_instruction}\n"
             f"{length_instruction}\n"
-            f"{structure_instruction}\n\n"
+            f"{structure_instruction}\n"
+            f"{formula_instruction}\n"
+            f"{style_instruction}\n\n"
             f"论文标题：{title}\n\n"
             f"论文摘要：{abstract}\n\n"
             f"论文上下文：{truncate_text(paper_context, 32000)}\n\n"
+            f"报告结构建议：\n{json.dumps(report_structure.model_dump(mode='json'), ensure_ascii=False, indent=2)}\n\n"
             f"结构化提炼结果：\n{json.dumps(outline.model_dump(mode='json'), ensure_ascii=False, indent=2)}\n\n"
             f"已选图片顺序：{selected_order}\n\n"
             f"已选图片与解释：\n{json.dumps(figure_context, ensure_ascii=False, indent=2)}\n"
@@ -176,6 +187,8 @@ class MarkdownComposer:
         )
         markdown = _ensure_markdown_header(markdown.strip() + "\n", final_document)
         markdown = _ensure_all_selected_figures_present(markdown.strip() + "\n", figure_context)
+        markdown = _normalize_markdown_image_spacing(markdown)
+        markdown = _deduplicate_full_document_repetition(markdown)
         return _deduplicate_acronym_annotations(_normalize_markdown_header(markdown))
 
     def render_markdown(self, document: FinalDocument) -> str:
@@ -196,6 +209,8 @@ class MarkdownComposer:
                     lines.append(f"![{alt}]({section.image_path})")
                     lines.append("")
         markdown = "\n".join(lines).strip() + "\n"
+        markdown = _normalize_markdown_image_spacing(markdown)
+        markdown = _deduplicate_full_document_repetition(markdown)
         return _deduplicate_acronym_annotations(_normalize_markdown_header(markdown))
 
     def _group_figures_by_role(
@@ -214,114 +229,71 @@ class MarkdownComposer:
             buckets["method"] = ordered_candidates[min(1, len(ordered_candidates) - 1)]
         return buckets
 
-    def _build_problem_section(
+    def _build_dynamic_sections(
         self,
+        *,
         outline: StoryOutline,
-        candidate: FigureCandidate | None,
+        report_structure: ReportStructure,
+        ordered_candidates: list[FigureCandidate],
         explanation_by_id: dict[str, FigureExplanation],
         output_dir: Path,
-    ) -> DocumentSection:
-        paragraphs = [_compress_paragraph(outline.motivation, max_sentences=3, max_chars=280)]
-        image_path = None
-        figure_id = None
-        image_after = 0
-        if candidate is not None:
-            explanation = explanation_by_id[candidate.normalized_id]
-            image_path = relative_posix_path(Path(candidate.image_path), output_dir)
-            figure_id = candidate.normalized_id
-            image_after = 1
-            paragraphs.append(
-                _compress_paragraph(
-                    _soften_figure_reference(explanation.what_it_shows),
-                    max_sentences=2,
-                    max_chars=220,
-                )
+    ) -> list[DocumentSection]:
+        role_buckets = self._group_figures_by_role(ordered_candidates, outline.figure_roles)
+        role_priority_by_section = {
+            section.key: _infer_section_roles(section.key, section.title)
+            for section in outline.sections
+        }
+        used_ids: set[str] = set()
+        sections: list[DocumentSection] = []
+
+        for section in outline.sections:
+            paragraphs = [_compress_paragraph(section.content, max_sentences=4, max_chars=360)]
+            candidate = _pick_candidate_for_section(
+                ordered_candidates=ordered_candidates,
+                role_buckets=role_buckets,
+                section_roles=role_priority_by_section.get(section.key, ["support"]),
+                used_ids=used_ids,
             )
-            importance = _compress_paragraph(explanation.why_it_matters, max_sentences=2, max_chars=160)
-            if importance:
-                paragraphs.append(importance)
-        return DocumentSection(
-            title="研究背景与任务定义",
-            paragraphs=[item for item in paragraphs if item],
-            image_path=image_path,
-            image_after_paragraph=image_after,
-            figure_id=figure_id,
-        )
-
-    def _build_method_section(
-        self,
-        outline: StoryOutline,
-        candidate: FigureCandidate | None,
-        explanation_by_id: dict[str, FigureExplanation],
-        output_dir: Path,
-    ) -> DocumentSection:
-        paragraphs = [_compress_paragraph(outline.method_core, max_sentences=4, max_chars=360)]
-        image_path = None
-        figure_id = None
-        image_after = 0
-        if candidate is not None:
-            explanation = explanation_by_id[candidate.normalized_id]
-            image_path = relative_posix_path(Path(candidate.image_path), output_dir)
-            figure_id = candidate.normalized_id
-            image_after = 1
-            paragraphs.append(
-                _compress_paragraph(
-                    _soften_figure_reference(explanation.what_it_shows),
-                    max_sentences=2,
-                    max_chars=220,
+            image_path = None
+            figure_id = None
+            image_after = 0
+            if candidate is not None:
+                used_ids.add(candidate.normalized_id)
+                explanation = explanation_by_id[candidate.normalized_id]
+                image_path = relative_posix_path(Path(candidate.image_path), output_dir)
+                figure_id = candidate.normalized_id
+                image_after = len(paragraphs)
+                follow_up = [
+                    _compress_paragraph(
+                        _soften_figure_reference(explanation.what_it_shows),
+                        max_sentences=2,
+                        max_chars=220,
+                    ),
+                    _compress_paragraph(explanation.how_to_read, max_sentences=2, max_chars=180),
+                    _compress_paragraph(explanation.why_it_matters, max_sentences=2, max_chars=160),
+                ]
+                paragraphs = _append_nonredundant_paragraphs(paragraphs, [item for item in follow_up if item])
+            paragraphs = [item for item in paragraphs if item]
+            if paragraphs:
+                sections.append(
+                    DocumentSection(
+                        title=section.title.strip() or _title_from_key(section.key, report_structure),
+                        paragraphs=paragraphs,
+                        image_path=image_path,
+                        image_after_paragraph=image_after,
+                        figure_id=figure_id,
+                    )
                 )
+
+        sections.extend(
+            self._build_additional_figure_sections(
+                ordered_candidates=ordered_candidates,
+                explanation_by_id=explanation_by_id,
+                output_dir=output_dir,
+                used_ids=used_ids,
             )
-            how_to_read = _compress_paragraph(explanation.how_to_read, max_sentences=2, max_chars=180)
-            if how_to_read:
-                paragraphs.append(how_to_read)
-        return DocumentSection(
-            title="方法设计与核心机制",
-            paragraphs=[item for item in paragraphs if item],
-            image_path=image_path,
-            image_after_paragraph=image_after,
-            figure_id=figure_id,
         )
-
-    def _build_result_section(
-        self,
-        outline: StoryOutline,
-        candidate: FigureCandidate | None,
-        explanation_by_id: dict[str, FigureExplanation],
-        output_dir: Path,
-    ) -> DocumentSection | None:
-        result_summary = _compress_paragraph(outline.result_summary, max_sentences=2, max_chars=180)
-        if not result_summary and candidate is None:
-            return None
-
-        paragraphs: list[str] = []
-        if result_summary:
-            paragraphs.append(result_summary)
-
-        image_path = None
-        figure_id = None
-        image_after = 0
-        if candidate is not None:
-            explanation = explanation_by_id[candidate.normalized_id]
-            image_path = relative_posix_path(Path(candidate.image_path), output_dir)
-            figure_id = candidate.normalized_id
-            if not paragraphs:
-                paragraphs.append(
-                    _compress_paragraph(_soften_figure_reference(explanation.what_it_shows), max_sentences=2, max_chars=180)
-                )
-            image_after = len(paragraphs)
-            why_it_matters = _compress_paragraph(explanation.why_it_matters, max_sentences=2, max_chars=160)
-            if why_it_matters:
-                paragraphs.append(why_it_matters)
-
-        if not paragraphs:
-            return None
-        return DocumentSection(
-            title="实验结果与结论",
-            paragraphs=paragraphs,
-            image_path=image_path,
-            image_after_paragraph=image_after,
-            figure_id=figure_id,
-        )
+        return sections
 
     def _build_additional_figure_sections(
         self,
@@ -345,6 +317,7 @@ class MarkdownComposer:
             why_it_matters = _compress_paragraph(explanation.why_it_matters, max_sentences=2, max_chars=160)
             if why_it_matters:
                 paragraphs.append(why_it_matters)
+            paragraphs = _append_nonredundant_paragraphs([], [item for item in paragraphs if item])
             sections.append(
                 DocumentSection(
                     title=explanation.title.strip() or candidate.normalized_id,
@@ -370,6 +343,41 @@ def _normalize_role(role_text: str) -> str:
     return "support"
 
 
+def _infer_section_roles(section_key: str, section_title: str) -> list[str]:
+    text = f"{section_key} {section_title}".lower()
+    if any(token in text for token in ("motivation", "background", "problem", "任务", "背景", "问题", "研究议题")):
+        return ["problem", "support", "method", "result"]
+    if any(token in text for token in ("method", "analysis", "framework", "mechanism", "路径", "方法", "机制", "分析")):
+        return ["method", "support", "problem", "result"]
+    if any(token in text for token in ("result", "findings", "discussion", "experiment", "evaluation", "结论", "发现", "实验", "评测", "讨论")):
+        return ["result", "support", "method", "problem"]
+    return ["support", "problem", "method", "result"]
+
+
+def _pick_candidate_for_section(
+    *,
+    ordered_candidates: list[FigureCandidate],
+    role_buckets: dict[str, FigureCandidate],
+    section_roles: list[str],
+    used_ids: set[str],
+) -> FigureCandidate | None:
+    for role in section_roles:
+        candidate = role_buckets.get(role)
+        if candidate is not None and candidate.normalized_id not in used_ids:
+            return candidate
+    for candidate in ordered_candidates:
+        if candidate.normalized_id not in used_ids:
+            return candidate
+    return None
+
+
+def _title_from_key(section_key: str, report_structure: ReportStructure) -> str:
+    for section in report_structure.sections:
+        if section.key == section_key:
+            return section.title
+    return section_key
+
+
 def _compress_paragraph(text: str, *, max_sentences: int, max_chars: int) -> str:
     normalized = text.strip()
     if not normalized:
@@ -386,6 +394,33 @@ def _compress_paragraph(text: str, *, max_sentences: int, max_chars: int) -> str
         if collected:
             return "".join(collected)
     return truncate_text(normalized, max_chars)
+
+
+def _append_nonredundant_paragraphs(existing: list[str], candidates: list[str]) -> list[str]:
+    merged = [item for item in existing if item]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if any(_is_redundant_paragraph(candidate, paragraph) for paragraph in merged):
+            continue
+        merged.append(candidate)
+    return merged
+
+
+def _is_redundant_paragraph(candidate: str, existing: str) -> bool:
+    left = _normalize_similarity_text(candidate)
+    right = _normalize_similarity_text(existing)
+    if not left or not right:
+        return False
+    if len(left) >= 20 and left in right:
+        return True
+    if len(right) >= 20 and right in left:
+        return True
+    return SequenceMatcher(None, left, right).ratio() >= 0.68
+
+
+def _normalize_similarity_text(text: str) -> str:
+    return re.sub(r"[\W_]+", "", text).lower()
 
 
 def _polish_text(text: str) -> str:
@@ -455,7 +490,75 @@ def _normalize_markdown_header(markdown: str) -> str:
             continue
         normalized_lines.append(line)
 
+    # 如果模型在标题前多吐出一行独立中文题目，这里直接丢掉标题前的孤立前言。
+    first_h1_index = next((index for index, line in enumerate(normalized_lines) if line.startswith("# ")), None)
+    if first_h1_index not in (None, 0):
+        prelude = [line.strip() for line in normalized_lines[:first_h1_index] if line.strip()]
+        if prelude and all(not line.startswith("#") for line in prelude):
+            normalized_lines = normalized_lines[first_h1_index:]
+
     return "\n".join(normalized_lines).strip() + "\n"
+
+
+def _normalize_markdown_image_spacing(markdown: str) -> str:
+    """保证 Markdown 图片前后各有一个空行，避免被解析成普通段落。"""
+    lines = markdown.splitlines()
+    normalized_lines: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        is_image_line = bool(re.fullmatch(r"!\[[^\]]*\]\([^)]+\)", stripped))
+        if is_image_line:
+            if normalized_lines and normalized_lines[-1] != "":
+                normalized_lines.append("")
+            normalized_lines.append(stripped)
+            normalized_lines.append("")
+            continue
+        normalized_lines.append(line)
+
+    compact_lines: list[str] = []
+    blank_run = 0
+    for line in normalized_lines:
+        if line == "":
+            blank_run += 1
+            if blank_run <= 2:
+                compact_lines.append(line)
+            continue
+        blank_run = 0
+        compact_lines.append(line)
+
+    return "\n".join(compact_lines).strip() + "\n"
+
+
+def _deduplicate_full_document_repetition(markdown: str) -> str:
+    """有些模型会把整篇 Markdown 原样重复一遍，这里做一次保守去重。"""
+    normalized = markdown.strip()
+    if not normalized:
+        return markdown
+
+    lines = normalized.splitlines()
+    header_indexes = [index for index, line in enumerate(lines) if line.startswith("# ")]
+    if len(header_indexes) >= 2:
+        first_header = lines[header_indexes[0]].strip()
+        canonical_first = "\n".join(lines[header_indexes[0] :]).strip()
+        for index in header_indexes[1:]:
+            if lines[index].strip() != first_header:
+                continue
+            first_part = "\n".join(lines[:index]).strip()
+            second_part = "\n".join(lines[index:]).strip()
+            if first_part == second_part:
+                return first_part + "\n"
+            if second_part == canonical_first:
+                return canonical_first + "\n"
+            if first_part.endswith(second_part):
+                return first_part + "\n"
+
+    if len(normalized) % 2 == 0:
+        half = len(normalized) // 2
+        if normalized[:half] == normalized[half:]:
+            return normalized[:half].rstrip() + "\n"
+
+    return markdown
 
 
 def _soften_figure_reference(text: str) -> str:

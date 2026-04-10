@@ -5,7 +5,9 @@
   const submitBtn = document.getElementById("submit");
   const lengthEl = document.getElementById("length");
   const focusEl = document.getElementById("focus");
+  const styleEl = document.getElementById("style");
   const statusEl = document.getElementById("status");
+  const generationWarningEl = document.getElementById("generation-warning");
   const errorEl = document.getElementById("error");
 
   const apiCustom = document.getElementById("api-custom");
@@ -27,31 +29,44 @@
     statusEl.textContent = msg || "";
   }
 
+  function setGenerationWarning(visible) {
+    if (generationWarningEl) {
+      generationWarningEl.hidden = !visible;
+    }
+  }
+
   const lengthField = lengthEl && lengthEl.closest(".field");
   const focusField = focusEl && focusEl.closest(".field");
+  const styleField = styleEl && styleEl.closest(".field");
 
-  function setLengthFocusLocked(locked) {
-    if (lengthEl && focusEl) {
+  function setGenerationOptionsLocked(locked) {
+    if (lengthEl && focusEl && styleEl) {
       lengthEl.disabled = locked;
       focusEl.disabled = locked;
+      styleEl.disabled = locked;
     }
     if (lengthField) lengthField.classList.toggle("field--locked", locked);
     if (focusField) focusField.classList.toggle("field--locked", locked);
+    if (styleField) styleField.classList.toggle("field--locked", locked);
   }
 
-  function applyDefaultLengthFocus() {
+  function applyDefaultGenerationOptions() {
     if (lengthEl) lengthEl.value = "medium";
     if (focusEl) focusEl.value = "method";
+    if (styleEl) styleEl.value = "professional";
   }
 
   function syncCustomApiUi() {
     const on = apiCustom && apiCustom.checked;
-    if (apiFields) apiFields.hidden = !on;
+    if (apiFields) {
+      apiFields.hidden = !on;
+      apiFields.classList.toggle("is-hidden", !on);
+    }
     if (on) {
-      setLengthFocusLocked(false);
+      setGenerationOptionsLocked(false);
     } else {
-      applyDefaultLengthFocus();
-      setLengthFocusLocked(true);
+      applyDefaultGenerationOptions();
+      setGenerationOptionsLocked(true);
     }
   }
 
@@ -136,12 +151,14 @@
     }
 
     setStatus("正在解析版面并撰写解读稿，耗时取决于页数与模型负载，请稍候…");
+    setGenerationWarning(true);
     submitBtn.disabled = true;
 
     const fd = new FormData();
     fd.append("file", selected, selected.name);
     fd.append("length", lengthEl.value);
     fd.append("focus", focusEl.value);
+    fd.append("style", styleEl.value);
 
     if (apiCustom && apiCustom.checked) {
       fd.append("api_custom", "true");
@@ -183,6 +200,7 @@
       showError(err instanceof Error ? err.message : String(err));
       setStatus("");
     } finally {
+      setGenerationWarning(false);
       submitBtn.disabled = !selected;
     }
   });

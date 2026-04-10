@@ -53,9 +53,12 @@ class OpenAICompatibleClient:
                 {"role": "user", "content": user_prompt},
             ],
         }
-        response = self._post_with_retry("chat/completions", payload=payload, model=model)
-        content = _extract_message_text(response.json())
-        return _parse_json_content(content, response_model)
+        return self._complete_structured(
+            model=model,
+            path="chat/completions",
+            payload=payload,
+            response_model=response_model,
+        )
 
     def complete_text(
         self,
@@ -99,9 +102,41 @@ class OpenAICompatibleClient:
                 {"role": "user", "content": user_content},
             ],
         }
-        response = self._post_with_retry("chat/completions", payload=payload, model=model)
-        content = _extract_message_text(response.json())
-        return _parse_json_content(content, response_model)
+        return self._complete_structured(
+            model=model,
+            path="chat/completions",
+            payload=payload,
+            response_model=response_model,
+        )
+
+    def _complete_structured(
+        self,
+        *,
+        model: str,
+        path: str,
+        payload: dict,
+        response_model: Type[ResponseModelT],
+    ) -> ResponseModelT:
+        max_parse_attempts = 3
+        last_error: LLMResponseError | None = None
+
+        for attempt in range(1, max_parse_attempts + 1):
+            response = self._post_with_retry(path, payload=payload, model=model)
+            content = _extract_message_text(response.json())
+            try:
+                return _parse_json_content(content, response_model)
+            except LLMResponseError as exc:
+                last_error = exc
+                if attempt >= max_parse_attempts:
+                    break
+                self._logger.warning(
+                    "模型结构化输出解析失败，准备第 %d/%d 次重新生成，模型=%s",
+                    attempt + 1,
+                    max_parse_attempts,
+                    model,
+                )
+
+        raise last_error or LLMResponseError("模型返回无法解析为 JSON。")
 
     def _post_with_retry(self, path: str, *, payload: dict, model: str) -> httpx.Response:
         """对模型接口做有限重试，优先处理网关错误、超时和连接失败。"""

@@ -18,7 +18,10 @@ from paper_reading.models import (
     PaperMetadata,
     ParsedPage,
     ParsedPaper,
+    ReportSectionBlueprint,
+    ReportStructure,
     SelectedFigure,
+    StorySection,
     StoryOutline,
 )
 from paper_reading.pipeline.composer import MarkdownComposer
@@ -34,7 +37,10 @@ from paper_reading.pipeline.orchestrator import (
 
 
 class _FakeParser:
+    last_max_pages: int | None = None
+
     def parse(self, pdf_path: Path, artifacts_dir: Path, **_: object) -> ParsedPaper:
+        self.__class__.last_max_pages = _.get("max_pages")
         page_dir = artifacts_dir / "page_images"
         page_dir.mkdir(parents=True, exist_ok=True)
         page_image_path = page_dir / "page_001.png"
@@ -100,10 +106,43 @@ class _FakePlanner:
         return StoryOutline(
             title_translation="测试论文中文译名",
             one_sentence_summary="这是一段更完整的导读摘要，用来帮助读者快速理解 RES（Referring Expression Segmentation，指称表达分割）论文。",
-            motivation="论文想解决输入和输出之间的映射问题，并扩展到 MRES（Multi-Granularity Referring Expression Segmentation，多粒度指称表达分割）场景。",
-            method_core="方法核心是一个分阶段流程。",
-            result_summary="",
+            sections=[
+                StorySection(
+                    key="background",
+                    title="研究议题与问题提出",
+                    content="论文想解决输入和输出之间的映射问题，并扩展到 MRES（Multi-Granularity Referring Expression Segmentation，多粒度指称表达分割）场景。",
+                ),
+                StorySection(
+                    key="analysis",
+                    title="分析路径与核心机制",
+                    content="方法核心是一个分阶段流程。",
+                ),
+            ],
             figure_roles={"Fig1": "method"},
+        )
+
+
+class _FakeReportStructurePlanner:
+    def plan(self, **_: object) -> ReportStructure:
+        return ReportStructure(
+            sections=[
+                ReportSectionBlueprint(
+                    key="background",
+                    title="研究议题与问题提出",
+                    guidance="交代研究议题、背景和问题。",
+                ),
+                ReportSectionBlueprint(
+                    key="analysis",
+                    title="分析路径与核心机制",
+                    guidance="解释分析路径和核心机制。",
+                ),
+                ReportSectionBlueprint(
+                    key="discussion",
+                    title="主要发现与讨论",
+                    guidance="概述主要发现和讨论。",
+                ),
+            ],
+            structure_rationale="这篇文章更适合用更中性的章节标题。",
         )
 
 
@@ -419,6 +458,7 @@ class OrchestratorTests(unittest.TestCase):
                 layout_detector=layout_detector,
                 matcher=_FakeMatcher(),
                 selector=_FakeSelector(),
+                structure_planner=_FakeReportStructurePlanner(),
                 planner=_FakePlanner(),
                 explainer=_FakeExplainer(),
                 composer=MarkdownComposer(),
@@ -432,6 +472,7 @@ class OrchestratorTests(unittest.TestCase):
             self.assertRegex(output_dir.name, r"^demo-\d{12}(?:-\d+)?$")
             self.assertTrue((output_dir / "artifacts" / "selected_figures.json").exists())
             self.assertTrue(Path(layout_detector._last_image).resolve().is_relative_to(output_dir.resolve()))
+            self.assertEqual(_FakeParser.last_max_pages, 40)
 
     def test_build_generates_markdown_and_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -450,6 +491,7 @@ class OrchestratorTests(unittest.TestCase):
                 layout_detector=_FakeLayoutDetector(),
                 matcher=_FakeMatcher(),
                 selector=_FakeSelector(),
+                structure_planner=_FakeReportStructurePlanner(),
                 planner=_FakePlanner(),
                 explainer=_FakeExplainer(),
                 composer=MarkdownComposer(),
@@ -463,13 +505,45 @@ class OrchestratorTests(unittest.TestCase):
             self.assertTrue(markdown_path.exists())
             self.assertTrue(pdf_path.exists())
             self.assertTrue((output_dir / "artifacts" / "selected_figures.json").exists())
+            self.assertTrue((output_dir / "artifacts" / "report_structure.json").exists())
+            self.assertTrue((output_dir / "assets" / "Fig1.png").exists())
             markdown = markdown_path.read_text(encoding="utf-8")
             self.assertIn("\n测试论文中文译名\n", markdown)
             self.assertNotIn("**中文题目：**", markdown)
             self.assertNotIn("## 核心术语与缩写", markdown)
             self.assertIn("RES（指称表达分割）", markdown)
-            self.assertIn("## 方法设计与核心机制", markdown)
+            self.assertIn("## 分析路径与核心机制", markdown)
+            self.assertIn("![Fig1](assets/Fig1.png)", markdown)
+            self.assertNotIn("![Fig1](artifacts/figures/Fig1.png)", markdown)
             self.assertNotIn("原始 caption", markdown)
+
+    def test_build_passes_custom_max_pages_to_parser(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            pdf_path = temp_root / "demo.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4 demo")
+            output_dir = temp_root / "output"
+
+            orchestrator = PaperReadingOrchestrator(
+                AppConfig(
+                    openai=OpenAISettings(api_key="test-key"),
+                    layout=LayoutSettings(model_path="fake-model.pt"),
+                    runtime=RuntimeSettings(output_root=str(output_dir)),
+                ),
+                parser=_FakeParser(),
+                layout_detector=_FakeLayoutDetector(),
+                matcher=_FakeMatcher(),
+                selector=_FakeSelector(),
+                structure_planner=_FakeReportStructurePlanner(),
+                planner=_FakePlanner(),
+                explainer=_FakeExplainer(),
+                composer=MarkdownComposer(),
+                pdf_exporter=_FakePdfExporter(),
+            )
+
+            orchestrator.build(BuildOptions(pdf_path=pdf_path, output_dir=output_dir, max_pages=12))
+
+            self.assertEqual(_FakeParser.last_max_pages, 12)
 
 
 if __name__ == "__main__":

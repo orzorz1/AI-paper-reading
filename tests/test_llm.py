@@ -7,7 +7,7 @@ import httpx
 from pydantic import BaseModel
 
 from paper_reading.config import OpenAISettings
-from paper_reading.errors import LLMServiceError
+from paper_reading.errors import LLMResponseError, LLMServiceError
 from paper_reading.llm import OpenAICompatibleClient
 
 
@@ -73,6 +73,55 @@ class LLMClientTests(unittest.TestCase):
 
         self.assertIn("HTTP 502", str(ctx.exception))
         self.assertIn("demo-model", str(ctx.exception))
+
+    def test_complete_json_regenerates_when_json_parse_fails(self) -> None:
+        settings = OpenAISettings(api_key="test-key", max_retries=0, retry_backoff_seconds=0.0)
+        client = OpenAICompatibleClient(settings)
+
+        request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+        malformed = httpx.Response(
+            200,
+            request=request,
+            json={"choices": [{"message": {"content": '{"value":"bad"'}}]},
+        )
+        success = httpx.Response(
+            200,
+            request=request,
+            json={"choices": [{"message": {"content": '{"value":"ok"}'}}]},
+        )
+        client._client = _FakeClient([malformed, success])
+
+        result = client.complete_json(
+            model="demo-model",
+            system_prompt="system",
+            user_prompt="user",
+            response_model=_SimpleResponse,
+        )
+
+        self.assertEqual(result.value, "ok")
+        self.assertEqual(client._client.calls, 2)
+
+    def test_complete_json_raises_after_three_parse_failures(self) -> None:
+        settings = OpenAISettings(api_key="test-key", max_retries=0, retry_backoff_seconds=0.0)
+        client = OpenAICompatibleClient(settings)
+
+        request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+        malformed = httpx.Response(
+            200,
+            request=request,
+            json={"choices": [{"message": {"content": "not json at all"}}]},
+        )
+        client._client = _FakeClient([malformed, malformed, malformed])
+
+        with self.assertRaises(LLMResponseError):
+            client.complete_json(
+                model="demo-model",
+                system_prompt="system",
+                user_prompt="user",
+                response_model=_SimpleResponse,
+            )
+
+        self.assertEqual(client._client.calls, 3)
 
 
 if __name__ == "__main__":

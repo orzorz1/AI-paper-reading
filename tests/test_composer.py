@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from paper_reading.models import BoundingBox, FigureCandidate, FigureExplanation, StoryOutline
+from paper_reading.models import BoundingBox, FigureCandidate, FigureExplanation, StoryOutline, StorySection
 from paper_reading.pipeline.composer import MarkdownComposer
 
 
@@ -16,6 +16,30 @@ class _FakeClient:
         )
 
 
+class _DuplicatedFakeClient:
+    def complete_text(self, **_: object) -> str:
+        block = (
+            "# 测试论文\n\n"
+            "测试论文的中文译名\n\n"
+            "> 导读摘要：导读摘要。\n\n"
+            "## 研究背景与任务定义\n\n"
+            "背景说明。\n"
+        )
+        return block + "\n" + block
+
+
+class _PreludeDuplicatedFakeClient:
+    def complete_text(self, **_: object) -> str:
+        block = (
+            "# 测试论文\n\n"
+            "测试论文的中文译名\n\n"
+            "> 导读摘要：导读摘要。\n\n"
+            "## 研究背景与任务定义\n\n"
+            "背景说明。\n"
+        )
+        return "测试论文的中文译名\n\n" + block + "\n" + block
+
+
 class ComposerTests(unittest.TestCase):
     def test_render_markdown_contains_required_sections(self) -> None:
         composer = MarkdownComposer()
@@ -23,9 +47,23 @@ class ComposerTests(unittest.TestCase):
         outline = StoryOutline(
             title_translation="测试论文的中文译名",
             one_sentence_summary="这是一段更完整的导读摘要，用来帮助读者快速理解 RES（Referring Expression Segmentation，指称表达分割）论文主线。",
-            motivation="动机说明，介绍研究背景和任务定义，并说明 MRES（Multi-Granularity Referring Expression Segmentation，多粒度指称表达分割）的目标。随后继续说明 RES 在细粒度场景下的局限。",
-            method_core="方法说明，介绍整体框架与关键机制。该方法继续沿用 RES 的基本设定。",
-            result_summary="结果说明",
+            sections=[
+                StorySection(
+                    key="motivation",
+                    title="研究背景与任务定义",
+                    content="动机说明，介绍研究背景和任务定义，并说明 MRES（Multi-Granularity Referring Expression Segmentation，多粒度指称表达分割）的目标。随后继续说明 RES 在细粒度场景下的局限。",
+                ),
+                StorySection(
+                    key="method_core",
+                    title="方法设计与核心机制",
+                    content="方法说明，介绍整体框架与关键机制。该方法继续沿用 RES 的基本设定。",
+                ),
+                StorySection(
+                    key="result_summary",
+                    title="实验结果与结论",
+                    content="结果说明",
+                ),
+            ],
             figure_roles={"Fig1": "method"},
         )
         candidate = FigureCandidate(
@@ -80,9 +118,10 @@ class ComposerTests(unittest.TestCase):
         outline = StoryOutline(
             title_translation="测试论文的中文译名",
             one_sentence_summary="导读摘要。",
-            motivation="背景说明。",
-            method_core="方法说明。",
-            result_summary="",
+            sections=[
+                StorySection(key="motivation", title="研究背景与任务定义", content="背景说明。"),
+                StorySection(key="method_core", title="方法设计与核心机制", content="方法说明。"),
+            ],
             figure_roles={"Fig1": "problem", "Fig3": "support"},
         )
         candidates = [
@@ -144,9 +183,58 @@ class ComposerTests(unittest.TestCase):
         self.assertIn("\n测试论文的中文译名\n", markdown)
         self.assertNotIn("**中文题目：**", markdown)
         self.assertIn("> 导读摘要：导读摘要。", markdown)
-        self.assertIn("![Fig1](artifacts/figures/Fig1.png)", markdown)
-        self.assertIn("![Fig3](artifacts/figures/Fig3.png)", markdown)
+        self.assertIn("\n\n![Fig1](artifacts/figures/Fig1.png)\n\n", markdown)
+        self.assertIn("\n\n![Fig3](artifacts/figures/Fig3.png)\n\n", markdown)
         self.assertIn("## 补充图示", markdown)
+
+    def test_generate_markdown_deduplicates_full_document_repetition(self) -> None:
+        composer = MarkdownComposer(_DuplicatedFakeClient(), "demo-model")
+        output_dir = Path("/tmp/demo-output")
+        outline = StoryOutline(
+            title_translation="测试论文的中文译名",
+            one_sentence_summary="导读摘要。",
+            sections=[StorySection(key="background", title="研究背景与任务定义", content="背景说明。")],
+            figure_roles={},
+        )
+
+        markdown = composer.generate_markdown(
+            title="测试论文",
+            abstract="摘要内容",
+            paper_context="上下文内容",
+            outline=outline,
+            selected_figures=[],
+            ordered_candidates=[],
+            explanations=[],
+            output_dir=output_dir,
+        )
+
+        self.assertEqual(markdown.count("# 测试论文"), 1)
+        self.assertEqual(markdown.count("## 研究背景与任务定义"), 1)
+
+    def test_generate_markdown_deduplicates_prelude_plus_full_document_repetition(self) -> None:
+        composer = MarkdownComposer(_PreludeDuplicatedFakeClient(), "demo-model")
+        output_dir = Path("/tmp/demo-output")
+        outline = StoryOutline(
+            title_translation="测试论文的中文译名",
+            one_sentence_summary="导读摘要。",
+            sections=[StorySection(key="background", title="研究背景与任务定义", content="背景说明。")],
+            figure_roles={},
+        )
+
+        markdown = composer.generate_markdown(
+            title="测试论文",
+            abstract="摘要内容",
+            paper_context="上下文内容",
+            outline=outline,
+            selected_figures=[],
+            ordered_candidates=[],
+            explanations=[],
+            output_dir=output_dir,
+        )
+
+        self.assertTrue(markdown.startswith("# 测试论文"))
+        self.assertEqual(markdown.count("# 测试论文"), 1)
+        self.assertEqual(markdown.count("测试论文的中文译名"), 1)
 
 
 if __name__ == "__main__":

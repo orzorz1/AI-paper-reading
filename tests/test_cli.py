@@ -92,6 +92,42 @@ class CLITests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.stdout)
         self.assertEqual(_FakeOrchestrator.built_options[0].content_focus, "experiment")
         self.assertEqual(_FakeOrchestrator.built_options[0].output_length, "long")
+        self.assertEqual(_FakeOrchestrator.built_options[0].max_pages, 40)
+        self.assertEqual(_FakeOrchestrator.built_options[0].writing_style, "professional")
+
+    def test_build_accepts_style_option(self) -> None:
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            pdf_path = temp_root / "demo.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4 demo")
+
+            with patch("paper_reading.cli.load_app_config", return_value=AppConfig(
+                openai=OpenAISettings(api_key="test-key"),
+                layout=LayoutSettings(model_path="fake-model.pt"),
+                runtime=RuntimeSettings(),
+            )), patch("paper_reading.cli.PaperReadingOrchestrator", _FakeOrchestrator):
+                result = runner.invoke(app, ["build", str(pdf_path), "--style", "colloquial"])
+
+        self.assertEqual(result.exit_code, 0, result.stdout)
+        self.assertEqual(_FakeOrchestrator.built_options[0].writing_style, "colloquial")
+
+    def test_build_accepts_max_pages_option(self) -> None:
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            pdf_path = temp_root / "demo.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4 demo")
+
+            with patch("paper_reading.cli.load_app_config", return_value=AppConfig(
+                openai=OpenAISettings(api_key="test-key"),
+                layout=LayoutSettings(model_path="fake-model.pt"),
+                runtime=RuntimeSettings(),
+            )), patch("paper_reading.cli.PaperReadingOrchestrator", _FakeOrchestrator):
+                result = runner.invoke(app, ["build", str(pdf_path), "--max-pages", "12"])
+
+        self.assertEqual(result.exit_code, 0, result.stdout)
+        self.assertEqual(_FakeOrchestrator.built_options[0].max_pages, 12)
 
 
 if __name__ == "__main__":
