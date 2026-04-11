@@ -85,6 +85,9 @@ class FigureExplainer:
             "- 不要擅自写“首次提出”“首次验证”“首次实现”等表述，除非给定上下文中明确出现\n\n"
             "- what_it_shows、how_to_read、why_it_matters 这三段会被直接拼进 Markdown，尽量写成自然短句\n"
             "- 不要依赖固定模板句，不要总是用“这张图展示了”“如下图所示”这类开头\n\n"
+            "- 如果需要提到公式，不要使用 ```math 或任何 fenced code block 包裹公式\n"
+            "- 行内公式统一写成 $...$，独立公式统一写成 $$...$$\n"
+            "- 不要使用 \\(...\\) 或 \\[...\\] 这种写法\n\n"
             "返回格式：\n"
             "{\n"
             f'  "normalized_id": "{candidate.normalized_id}",\n'
