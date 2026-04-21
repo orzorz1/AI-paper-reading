@@ -1,5 +1,7 @@
 # AI-paper-reading
 
+网页版：paper.emio.cn
+
 一个面向 AI 论文的小工具。
 
 当前是命令行工具，没有页面。
