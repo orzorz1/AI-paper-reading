@@ -535,32 +535,40 @@ def _normalize_markdown_image_spacing(markdown: str) -> str:
 
 
 def _deduplicate_full_document_repetition(markdown: str) -> str:
-    """有些模型会把整篇 Markdown 原样重复一遍，这里做一次保守去重。"""
+    """有些模型会把整篇 Markdown 原样重复一遍（可能带微小改动），这里做去重。"""
     normalized = markdown.strip()
     if not normalized:
         return markdown
 
+    # LLM 有时把第二份 `# 标题` 直接拼在上一行末尾而不换行，先拆开。
+    # 仅匹配前面不是换行也不是 `#` 的 `# `，避免误拆 `##`/`###` 等子标题。
+    normalized = re.sub(r"(?<![#\n])(# \S)", r"\n\1", normalized)
+
     lines = normalized.splitlines()
-    header_indexes = [index for index, line in enumerate(lines) if line.startswith("# ")]
+    header_indexes = [index for index, line in enumerate(lines) if line.startswith("# ") and not line.startswith("## ")]
     if len(header_indexes) >= 2:
         first_header = lines[header_indexes[0]].strip()
-        canonical_first = "\n".join(lines[header_indexes[0] :]).strip()
         for index in header_indexes[1:]:
-            if lines[index].strip() != first_header:
-                continue
+            candidate_header = lines[index].strip()
+            # 标题精确匹配，或标题相似度足够高（模型可能微调标题措辞）
+            if candidate_header != first_header:
+                header_sim = SequenceMatcher(None, first_header, candidate_header).ratio()
+                if header_sim < 0.7:
+                    continue
             first_part = "\n".join(lines[:index]).strip()
             second_part = "\n".join(lines[index:]).strip()
             if first_part == second_part:
-                return first_part + "\n"
-            if second_part == canonical_first:
-                return canonical_first + "\n"
+                return second_part + "\n"
             if first_part.endswith(second_part):
-                return first_part + "\n"
+                return second_part + "\n"
+            similarity = SequenceMatcher(None, first_part, second_part).ratio()
+            if similarity >= 0.85:
+                return second_part + "\n"
 
     if len(normalized) % 2 == 0:
         half = len(normalized) // 2
         if normalized[:half] == normalized[half:]:
-            return normalized[:half].rstrip() + "\n"
+            return normalized[half:].rstrip() + "\n"
 
     return markdown
 
